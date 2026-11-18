@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- TShock 6.x & Terraria 1.4.5 Series Compatibility -->
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>13.0</LangVersion>
+    <AssemblyVersion>2.0.0</AssemblyVersion>
+    <FileVersion>2.0.0</FileVersion>
+    <NeutralLanguage>en</NeutralLanguage>
+    
+    <!-- Optimisasi Build Ringan Tanpa Visual Studio -->
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <Deterministic>true</Deterministic>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pustaka Database & Framework Inti TShock -->
+    <PackageReference Include="LiteDB" Version="5.0.21" />
+    <PackageReference Include="TShock" Version="6.1.0" />
+  </ItemGroup>
+
+</Project>
