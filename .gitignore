@@ -1,0 +1,19 @@
+# AI Studio preview & workspace support files
+metadata.json
+package.json
+package-lock.json
+server.js
+node_modules/
+public/
+.aistudio/
+.vite/
+
+# .NET build artifacts & local PC config
+bin/
+obj/
+.vs/
+*.user
+Univers/bin/
+Univers/obj/
+Univers/tshock_path.txt
+Univers/tshock_world.txt

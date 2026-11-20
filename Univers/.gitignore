@@ -1,0 +1,6 @@
+bin/
+obj/
+.vs/
+*.user
+tshock_path.txt
+tshock_world.txt
