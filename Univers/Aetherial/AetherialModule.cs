@@ -951,7 +951,7 @@ namespace Univers.Aetherial
                 if (string.IsNullOrEmpty(greetProfile.AssignedElement))
                 {
                     player.SendInfoMessage("[i:73] [c/38bdf8:=== AETHERIAL RESONANCE ===]");
-                    player.SendInfoMessage("[c/f59e0b:Selesaikan Warp Tutorial atau ketik [c/4ade80:/element awaken] untuk membangkitkan elemen jiwamu!]");
+                    player.SendInfoMessage("[c/f59e0b:Selesaikan Warp Tutorial atau ketik ][c/4ade80:/element awaken][c/f59e0b: untuk membangkitkan elemen jiwamu!]");
                 }
                 else
                 {

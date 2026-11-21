@@ -20,7 +20,7 @@ namespace Univers.MultiWorld
         {
             Commands.ChatCommands.Add(new Command("univers.mw.use", MwCommand, "mw", "multiworld"));
             Commands.ChatCommands.Add(new Command("univers.mw.use", WorldShortcutCommand, "world", "worlds"));
-            Commands.ChatCommands.Add(new Command("univers.mw.use", LobbyShortcutCommand, "lobby", "hub"));
+            Commands.ChatCommands.Add(new Command("", LobbyShortcutCommand, "lobby", "hub"));
             Commands.ChatCommands.Add(new Command("univers.mw.use", GlobalOnlineCommand, "players", "glist"));
         }
 

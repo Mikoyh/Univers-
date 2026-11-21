@@ -45,6 +45,7 @@ namespace Univers.MultiWorld
         private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
         private static readonly ConcurrentDictionary<string, byte> _pendingEntityClearPlayers = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _recentTransfers = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, (WorldTransferTicket Ticket, DateTime ExpiresUtc)> _claimedTickets = new(StringComparer.OrdinalIgnoreCase);
 
         public static void Initialize(string tshockSavePath)
         {
@@ -127,6 +128,17 @@ namespace Univers.MultiWorld
 
         private static string ResolveMasterUniversDir(string localUniversDir)
         {
+            string? masterSave = Environment.GetEnvironmentVariable("UNIVERS_MASTER_SAVEPATH");
+            if (!string.IsNullOrWhiteSpace(masterSave))
+            {
+                try
+                {
+                    string resolved = Path.Combine(Path.GetFullPath(masterSave), "Univers");
+                    if (Directory.Exists(resolved)) return resolved;
+                }
+                catch { }
+            }
+
             string candidateRoot = Path.Combine(AppContext.BaseDirectory, "tshock", "Univers");
             if (IsChildProcess && Directory.Exists(candidateRoot))
             {
@@ -426,7 +438,7 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null) return;
 
-            TryApplyTransferTicket(player, markForCleanup: true);
+            TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
         }
 
         private static void OnNetGreetPlayer(GreetPlayerEventArgs args)
@@ -434,8 +446,9 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null || !player.Active) return;
 
-            bool transferred = TryApplyTransferTicket(player, markForCleanup: true);
+            bool transferred = TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
             bool hasPendingClear = _pendingEntityClearPlayers.TryRemove(player.Name, out _);
+            _claimedTickets.TryRemove(player.Name, out _);
 
             if (transferred || hasPendingClear)
             {
@@ -443,11 +456,7 @@ namespace Univers.MultiWorld
                 _mainThreadQueue.Enqueue(() =>
                 {
                     ClearInactiveEntitiesForPlayer(who);
-                    var p = TShock.Players[who];
-                    if (p != null && p.Active && p.RealPlayer)
-                    {
-                        p.Teleport(Main.spawnTileX * 16f, Math.Max(10, Main.spawnTileY - 3) * 16f);
-                    }
+                    SendSpawnSectionsAndTeleport(who);
                 });
 
                 var worldDef = Config.GetWorld(CurrentWorldId);
@@ -469,6 +478,54 @@ namespace Univers.MultiWorld
 
             // Kirim indikator pemain online di world lain agar tidak terasa sepi
             _ = SendCrossWorldRosterGreetingAsync(player);
+        }
+
+        private static void SendSpawnSectionsAndTeleport(int who)
+        {
+            var p = TShock.Players[who];
+            if (p == null || !p.Active || !p.RealPlayer) return;
+
+            try
+            {
+                int maxSecX = Math.Max(1, Main.maxTilesX / 200);
+                int maxSecY = Math.Max(1, Main.maxTilesY / 150);
+                int centerSx = Math.Clamp(Main.spawnTileX / 200, 0, maxSecX - 1);
+                int centerSy = Math.Clamp(Main.spawnTileY / 150, 0, maxSecY - 1);
+                int minSx = Math.Max(0, centerSx - 2);
+                int maxSx = Math.Min(maxSecX - 1, centerSx + 2);
+                int minSy = Math.Max(0, centerSy - 1);
+                int maxSy = Math.Min(maxSecY - 1, centerSy + 1);
+
+                for (int sx = minSx; sx <= maxSx; sx++)
+                {
+                    for (int sy = minSy; sy <= maxSy; sy++)
+                    {
+                        NetMessage.SendSection(who, sx, sy);
+                    }
+                }
+                NetMessage.SendData((int)PacketTypes.TileFrameSection, who, -1, null, minSx, minSy, maxSx, maxSy);
+            }
+            catch { }
+
+            float spawnPx = Main.spawnTileX * 16f;
+            float spawnPy = Math.Max(10, Main.spawnTileY - 3) * 16f;
+            p.Teleport(spawnPx, spawnPy);
+
+            // Safety follow-up jika Packet 13 lama sempat balapan dengan Packet 65 saat switch
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(250);
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    var cur = TShock.Players[who];
+                    if (cur == null || !cur.Active || !cur.RealPlayer) return;
+                    if (Math.Abs(cur.TPlayer.position.X - spawnPx) > 16f * 45f ||
+                        Math.Abs(cur.TPlayer.position.Y - spawnPy) > 16f * 45f)
+                    {
+                        cur.Teleport(spawnPx, spawnPy);
+                    }
+                });
+            });
         }
 
         private static async Task SendCrossWorldRosterGreetingAsync(TSPlayer player)
@@ -509,6 +566,7 @@ namespace Univers.MultiWorld
 
             string pName = player.Name;
             _pendingEntityClearPlayers.TryRemove(pName, out _);
+            _claimedTickets.TryRemove(pName, out _);
 
             bool wasTransfer = _recentTransfers.TryGetValue(pName, out var untilUtc) && DateTime.UtcNow <= untilUtc;
             if (!wasTransfer && player.RealPlayer)
@@ -543,11 +601,57 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static bool TryApplyTransferTicket(TSPlayer player, bool markForCleanup)
+        private static bool TryApplyTransferTicket(TSPlayer player, bool markForCleanup, bool consumeFromMaster)
         {
             if (string.IsNullOrWhiteSpace(player.Name)) return false;
 
-            var ticket = TicketStore?.ConsumeTicket(player.Name, CurrentWorldId);
+            WorldTransferTicket? ticket = null;
+            bool freshlyClaimed = false;
+
+            if (_claimedTickets.TryGetValue(player.Name, out var cached) &&
+                DateTime.UtcNow <= cached.ExpiresUtc &&
+                cached.Ticket.TargetWorldId.Equals(CurrentWorldId, StringComparison.OrdinalIgnoreCase))
+            {
+                ticket = cached.Ticket;
+            }
+            else if (consumeFromMaster)
+            {
+                if (IsChildProcess)
+                {
+                    try
+                    {
+                        var res = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                        {
+                            Action = "claim_ticket",
+                            WorldId = CurrentWorldId,
+                            PlayerName = player.Name
+                        }, timeoutMs: 2500).GetAwaiter().GetResult();
+
+                        if (res.Success)
+                        {
+                            ticket = new WorldTransferTicket
+                            {
+                                PlayerName = player.Name,
+                                AccountName = res.AccountName,
+                                GroupName = res.GroupName,
+                                ClientUuid = res.ClientUuid,
+                                HasWildcardPermission = res.HasWildcardPermission,
+                                GroupPermissions = res.GroupPermissions,
+                                TargetWorldId = CurrentWorldId
+                            };
+                        }
+                    }
+                    catch { }
+                }
+
+                ticket ??= TicketStore?.ConsumeTicket(player.Name, CurrentWorldId);
+                if (ticket != null)
+                {
+                    freshlyClaimed = true;
+                    _claimedTickets[player.Name] = (ticket, DateTime.UtcNow.AddSeconds(10));
+                }
+            }
+
             if (ticket == null) return false;
 
             if (markForCleanup)
@@ -560,6 +664,9 @@ namespace Univers.MultiWorld
                 string accName = string.IsNullOrWhiteSpace(ticket.AccountName) ? player.Name : ticket.AccountName;
                 string grpName = string.IsNullOrWhiteSpace(ticket.GroupName) ? "default" : ticket.GroupName;
 
+                var group = EnsureSyncedGroup(grpName, ticket.HasWildcardPermission, ticket.GroupPermissions);
+                string resolvedGroupName = group?.Name ?? grpName;
+
                 var account = TShock.UserAccounts.GetUserAccountByName(accName);
                 if (account == null)
                 {
@@ -567,7 +674,7 @@ namespace Univers.MultiWorld
                     {
                         Name = accName,
                         UUID = !string.IsNullOrWhiteSpace(ticket.ClientUuid) ? ticket.ClientUuid : player.UUID,
-                        Group = grpName,
+                        Group = resolvedGroupName,
                         Registered = DateTime.UtcNow.ToString("s"),
                         LastAccessed = DateTime.UtcNow.ToString("s"),
                         KnownIps = "[]"
@@ -576,8 +683,13 @@ namespace Univers.MultiWorld
                     TryInsertMirrorAccount(account);
                     account = TShock.UserAccounts.GetUserAccountByName(accName) ?? account;
                 }
+                else if (!string.IsNullOrWhiteSpace(resolvedGroupName) &&
+                         !string.Equals(account.Group, resolvedGroupName, StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySetUserGroup(account, resolvedGroupName);
+                    account.Group = resolvedGroupName;
+                }
 
-                var group = TShock.Groups.GetGroupByName(account.Group) ?? TShock.Groups.GetGroupByName(grpName) ?? TShock.Groups.GetGroupByName("default");
                 if (group != null)
                 {
                     player.Group = group;
@@ -585,6 +697,11 @@ namespace Univers.MultiWorld
 
                 player.Account = account;
                 player.IsLoggedIn = true;
+
+                if (freshlyClaimed)
+                {
+                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Auto-Auth '{player.Name}' -> Group '{player.Group?.Name ?? resolvedGroupName}' (Wildcard={ticket.HasWildcardPermission}).");
+                }
             }
             catch (Exception ex)
             {
@@ -592,6 +709,72 @@ namespace Univers.MultiWorld
             }
 
             return true;
+        }
+
+        private static Group? EnsureSyncedGroup(string groupName, bool hasWildcard, string permissionsCsv)
+        {
+            var group = TShock.Groups.GetGroupByName(groupName);
+            if (group == null && !groupName.Equals("default", StringComparison.OrdinalIgnoreCase))
+            {
+                string permsToSeed = hasWildcard ? "*" : (permissionsCsv ?? string.Empty);
+                try
+                {
+                    MethodInfo? addGrp = TShock.Groups.GetType().GetMethod("AddGroup", new[] { typeof(string), typeof(string), typeof(string), typeof(string) });
+                    addGrp?.Invoke(TShock.Groups, new object?[] { groupName, null, permsToSeed, Group.defaultChatColor });
+                    group = TShock.Groups.GetGroupByName(groupName);
+                }
+                catch
+                {
+                }
+            }
+
+            if (group == null && hasWildcard)
+            {
+                group = TShock.Groups.GetGroupByName("superadmin") ?? new SuperAdminGroup();
+            }
+
+            if (group != null && hasWildcard && !group.HasPermission("*"))
+            {
+                try
+                {
+                    TShock.Groups.AddPermissions(group.Name, new List<string> { "*" });
+                    group = TShock.Groups.GetGroupByName(group.Name) ?? new SuperAdminGroup();
+                }
+                catch
+                {
+                    group = new SuperAdminGroup();
+                }
+            }
+            else if (group != null && !string.IsNullOrWhiteSpace(permissionsCsv))
+            {
+                try
+                {
+                    var missing = permissionsCsv
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Where(perm => !group.HasPermission(perm))
+                        .ToList();
+                    if (missing.Count > 0)
+                    {
+                        TShock.Groups.AddPermissions(group.Name, missing);
+                    }
+                }
+                catch { }
+            }
+
+            return group ?? TShock.Groups.GetGroupByName("default");
+        }
+
+        private static void TrySetUserGroup(UserAccount account, string groupName)
+        {
+            try
+            {
+                var mgr = TShock.UserAccounts;
+                MethodInfo? m = mgr.GetType().GetMethod("SetUserGroup", new[] { typeof(UserAccount), typeof(string) });
+                m?.Invoke(mgr, new object[] { account, groupName });
+            }
+            catch
+            {
+            }
         }
 
         private static void TryInsertMirrorAccount(UserAccount account)
@@ -638,6 +821,17 @@ namespace Univers.MultiWorld
 
         #region Master Coordinator Actions & IPC Handler
 
+        private static void ExtractGroupPermissions(string groupName, TSPlayer? playerHint, out bool hasWildcard, out string permsCsv)
+        {
+            Group? g = playerHint?.Group ?? TShock.Groups.GetGroupByName(groupName);
+            hasWildcard = g?.HasPermission("*") ?? false;
+            if (!hasWildcard && string.Equals(groupName, "superadmin", StringComparison.OrdinalIgnoreCase))
+            {
+                hasWildcard = true;
+            }
+            permsCsv = g != null ? string.Join(",", g.Permissions) : string.Empty;
+        }
+
         public static async Task<(bool Ok, string Message)> TransferPlayerAsync(
             TSPlayer? requester,
             string playerName,
@@ -646,10 +840,12 @@ namespace Univers.MultiWorld
             string uuid,
             string targetWorldId)
         {
+            ExtractGroupPermissions(groupName, requester, out bool hasWildcard, out string groupPerms);
+
             if (IsChildProcess)
             {
                 _recentTransfers[playerName] = DateTime.UtcNow.AddSeconds(12);
-                return await RelayTransferToMasterAsync(playerName, accountName, groupName, uuid, targetWorldId);
+                return await RelayTransferToMasterAsync(playerName, accountName, groupName, uuid, hasWildcard, groupPerms, targetWorldId);
             }
 
             var target = Config.GetWorld(targetWorldId);
@@ -702,7 +898,7 @@ namespace Univers.MultiWorld
                 : target.Port;
 
             _recentTransfers[playerName] = DateTime.UtcNow.AddSeconds(12);
-            TicketStore.IssueTicket(playerName, accountName, groupName, uuid, session.CurrentWorldId, target.Id);
+            TicketStore.IssueTicket(playerName, accountName, groupName, uuid, session.CurrentWorldId, target.Id, hasWildcard, groupPerms);
             if (!target.IsHub)
             {
                 ProcessManager?.MarkWorldPlayerArriving(target.Id, 90);
@@ -721,6 +917,8 @@ namespace Univers.MultiWorld
             string accountName,
             string groupName,
             string uuid,
+            bool hasWildcard,
+            string groupPermissions,
             string targetWorldId)
         {
             var res = await MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
@@ -731,6 +929,8 @@ namespace Univers.MultiWorld
                 AccountName = accountName,
                 GroupName = groupName,
                 ClientUuid = uuid,
+                HasWildcardPermission = hasWildcard,
+                GroupPermissions = groupPermissions,
                 TargetWorldId = targetWorldId
             }, timeoutMs: 320_000);
 
@@ -771,6 +971,25 @@ namespace Univers.MultiWorld
                         await HandleMasterPresenceEventAsync(req.AdminSubAction, req.PlayerName, req.WorldId);
                         return new IpcResponse { Success = true };
 
+                    case "claim_ticket":
+                        {
+                            var claimed = TicketStore?.ConsumeTicket(req.PlayerName, req.WorldId);
+                            if (claimed == null)
+                            {
+                                return new IpcResponse { Success = false, Message = "Ticket tidak ditemukan." };
+                            }
+
+                            return new IpcResponse
+                            {
+                                Success = true,
+                                AccountName = claimed.AccountName,
+                                GroupName = claimed.GroupName,
+                                ClientUuid = claimed.ClientUuid,
+                                HasWildcardPermission = claimed.HasWildcardPermission,
+                                GroupPermissions = claimed.GroupPermissions
+                            };
+                        }
+
                     case "request_transfer":
                         {
                             var target = Config.GetWorld(req.TargetWorldId);
@@ -803,8 +1022,12 @@ namespace Univers.MultiWorld
                                 ? ResolveListenPort(Config.MasterWorldPort)
                                 : target.Port;
 
+                            ExtractGroupPermissions(req.GroupName, null, out bool masterWildcard, out string masterPerms);
+                            bool finalWildcard = req.HasWildcardPermission || masterWildcard;
+                            string finalPerms = !string.IsNullOrWhiteSpace(masterPerms) ? masterPerms : req.GroupPermissions;
+
                             _recentTransfers[req.PlayerName] = DateTime.UtcNow.AddSeconds(12);
-                            TicketStore.IssueTicket(req.PlayerName, req.AccountName, req.GroupName, req.ClientUuid, session.CurrentWorldId, target.Id);
+                            TicketStore.IssueTicket(req.PlayerName, req.AccountName, req.GroupName, req.ClientUuid, session.CurrentWorldId, target.Id, finalWildcard, finalPerms);
                             if (!target.IsHub)
                             {
                                 ProcessManager?.MarkWorldPlayerArriving(target.Id, 90);
@@ -896,8 +1119,9 @@ namespace Univers.MultiWorld
                             var ses = Proxy.FindSessionByPlayerName(p.Name);
                             if (ses != null && ses.CurrentWorldId.Equals(targetDef.Id, StringComparison.OrdinalIgnoreCase))
                             {
+                                ExtractGroupPermissions(p.Group?.Name ?? "default", p, out bool delWildcard, out string delPerms);
                                 _recentTransfers[p.Name] = DateTime.UtcNow.AddSeconds(12);
-                                TicketStore.IssueTicket(p.Name, p.Account?.Name ?? p.Name, p.Group?.Name ?? "default", p.UUID, targetDef.Id, Config.HubWorldId);
+                                TicketStore.IssueTicket(p.Name, p.Account?.Name ?? p.Name, p.Group?.Name ?? "default", p.UUID, targetDef.Id, Config.HubWorldId, delWildcard, delPerms);
                                 await Proxy.SwitchPlayerWorldAsync(p.Name, Config.HubWorldId, hubPort);
                             }
                         }

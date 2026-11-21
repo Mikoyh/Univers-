@@ -824,6 +824,13 @@ namespace Univers.MultiWorld
                 settings["DisableLoginBeforeJoin"] = true;
 
                 File.WriteAllText(targetCfgPath, root.ToString(Formatting.Indented));
+
+                string targetSscPath = Path.Combine(cfgDir, "sscconfig.json");
+                string masterSscPath = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "sscconfig.json");
+                if (!File.Exists(targetSscPath) && File.Exists(masterSscPath))
+                {
+                    File.Copy(masterSscPath, targetSscPath, overwrite: false);
+                }
             }
             catch (Exception ex)
             {
@@ -944,10 +951,13 @@ namespace Univers.MultiWorld
                 line.Contains("left", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("kick", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("executed:", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("said:", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("password", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("warn", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("[Server", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("[MultiWorld", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("[Univers", StringComparison.OrdinalIgnoreCase))
             {
                 TShock.Log.ConsoleInfo($"[MW:{rt.WorldId}] {line}");

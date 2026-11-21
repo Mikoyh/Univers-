@@ -50,7 +50,15 @@ namespace Univers
         public static string GetEffectiveSavePath()
         {
             string? master = Environment.GetEnvironmentVariable("UNIVERS_MASTER_SAVEPATH");
-            return !string.IsNullOrWhiteSpace(master) ? master : TShock.SavePath;
+            string raw = !string.IsNullOrWhiteSpace(master) ? master : TShock.SavePath;
+            try
+            {
+                return Path.GetFullPath(raw);
+            }
+            catch
+            {
+                return raw;
+            }
         }
 
         public override void Initialize()
