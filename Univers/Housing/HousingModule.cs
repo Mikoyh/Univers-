@@ -431,11 +431,11 @@ namespace Univers.Housing
                 return;
             }
 
-            if (e.MsgID == PacketTypes.ToggleDoorState || e.MsgID == PacketTypes.HitSwitch)
+            if ((int)e.MsgID == MessageID.ToggleDoorState || e.MsgID == PacketTypes.HitSwitch)
             {
                 if (e.Length < 4 || player.HasPermission("univers.house.admin")) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
-                if (e.MsgID == PacketTypes.ToggleDoorState) reader.ReadByte();
+                if ((int)e.MsgID == MessageID.ToggleDoorState) reader.ReadByte();
                 short tx = reader.ReadInt16();
                 short ty = reader.ReadInt16();
 
