@@ -51,6 +51,7 @@ namespace Univers.MultiWorld
         public byte[]? PlayerManaPacket;
         public byte[]? PlayerBuffPacket;
         public byte[]? PlayerSpawnPacket;
+        public byte[]? RequestTilesPacket;
         public readonly Dictionary<short, byte[]> PlayerSlotPackets = new();
         public readonly object CacheLock = new();
 
@@ -363,7 +364,7 @@ namespace Univers.MultiWorld
                     byte id = hs[2];
                     if (id == 2) // Disconnect
                     {
-                        string reason = TryReadPacketString(hs, 3);
+                        string reason = TryReadNetworkText(hs, 3);
                         string msg = $"Ditolak oleh world '{targetWorldId}': {reason}";
                         TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
                         return (false, msg);
@@ -395,24 +396,30 @@ namespace Univers.MultiWorld
                 // 5. Terima WorldInfo (7) -> kirim RequestTileData (8) -> teruskan Chunk & CompleteConnection (49)
                 bool sentTileRequest = false;
                 bool completedSpawn = false;
+                var seenIds = new List<byte>();
                 using var step5Cts = CancellationTokenSource.CreateLinkedTokenSource(session.Cts.Token);
-                step5Cts.CancelAfter(TimeSpan.FromSeconds(25));
+                step5Cts.CancelAfter(TimeSpan.FromSeconds(45));
 
                 while (!step5Cts.IsCancellationRequested && !session.IsClosed)
                 {
                     byte[]? srvPkt = await ReadPacketAsync(newStream, step5Cts.Token);
                     if (srvPkt == null)
                     {
+                        string cause = step5Cts.IsCancellationRequested
+                            ? "Timeout 45d menunggu CompleteConnection (49)"
+                            : "Child menutup koneksi sebelum selesai";
+                        string pkts = seenIds.Count > 0 ? string.Join(",", seenIds.TakeLast(20)) : "-";
                         string msg = $"Koneksi ke '{targetWorldId}' terputus saat memuat peta.";
-                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal ({cause} | Paket: [{pkts}]).");
                         await SendClientDisconnectAndDisposeAsync(session, msg);
                         return (false, msg);
                     }
 
                     byte srvId = srvPkt[2];
+                    seenIds.Add(srvId);
                     if (srvId == 2)
                     {
-                        string reason = TryReadPacketString(srvPkt, 3);
+                        string reason = TryReadNetworkText(srvPkt, 3);
                         string msg = $"World '{targetWorldId}' memutus koneksi: {reason}";
                         TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
                         await SendClientDisconnectAndDisposeAsync(session, msg);
@@ -447,15 +454,16 @@ namespace Univers.MultiWorld
                     if (srvId == 7 && !sentTileRequest) // WorldInfo -> minta section spawn!
                     {
                         sentTileRequest = true;
-                        byte[] reqTiles = BuildRequestEssentialTilesPacket(-1, -1);
+                        byte[] reqTiles = BuildRequestEssentialTilesPacket(session, -1, -1);
                         await SendPacketAsync(newStream, session.BackendWriteLock, reqTiles, session.Cts.Token);
                     }
                 }
 
                 if (!completedSpawn)
                 {
+                    string pkts = seenIds.Count > 0 ? string.Join(",", seenIds.TakeLast(20)) : "-";
                     string msg = $"Timeout memuat data world '{targetWorldId}'.";
-                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg} | Paket: [{pkts}]");
                     await SendClientDisconnectAndDisposeAsync(session, msg);
                     return (false, msg);
                 }
@@ -617,6 +625,12 @@ namespace Univers.MultiWorld
                     case 12:
                         session.PlayerSpawnPacket = (byte[])packet.Clone();
                         break;
+                    case 8:
+                        if (session.RequestTilesPacket == null && packet.Length >= 11)
+                        {
+                            session.RequestTilesPacket = (byte[])packet.Clone();
+                        }
+                        break;
                 }
             }
         }
@@ -693,8 +707,18 @@ namespace Univers.MultiWorld
             return slot;
         }
 
-        private static byte[] BuildRequestEssentialTilesPacket(int x, int y)
+        private static byte[] BuildRequestEssentialTilesPacket(ProxySession session, int x, int y)
         {
+            byte[]? template;
+            lock (session.CacheLock) template = session.RequestTilesPacket;
+            if (template != null && template.Length >= 11)
+            {
+                byte[] clone = (byte[])template.Clone();
+                BinaryPrimitives.WriteInt32LittleEndian(clone.AsSpan(3, 4), x);
+                BinaryPrimitives.WriteInt32LittleEndian(clone.AsSpan(7, 4), y);
+                return clone;
+            }
+
             byte[] pkt = new byte[11];
             pkt[0] = 11;
             pkt[1] = 0;
@@ -728,6 +752,14 @@ namespace Univers.MultiWorld
                 }
             }
             return string.Empty;
+        }
+
+        private static string TryReadNetworkText(byte[] packet, int offset)
+        {
+            if (packet.Length <= offset + 1) return string.Empty;
+            string afterMode = TryReadPacketString(packet, offset + 1);
+            if (!string.IsNullOrWhiteSpace(afterMode)) return afterMode;
+            return TryReadPacketString(packet, offset);
         }
 
         private static string TryReadPacketString(byte[] packet, int offset)
@@ -815,6 +847,7 @@ namespace Univers.MultiWorld
                 using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
                 bw.Write((ushort)0);
                 bw.Write((byte)2); // Disconnect
+                bw.Write((byte)0); // NetworkText.Mode.Literal (Terraria 1.4+)
                 bw.Write(reason ?? "Koneksi multiworld terputus.");
                 bw.Flush();
 

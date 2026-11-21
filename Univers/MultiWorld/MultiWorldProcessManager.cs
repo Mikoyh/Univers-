@@ -925,11 +925,30 @@ namespace Univers.MultiWorld
                 rt.LastProgressLine = line.Trim();
             }
 
+            if (line.StartsWith("Saving world data", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("Validating world save", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("Backing up", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("World backed up", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
             if (isError ||
                 line.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("Fatal error", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("Generating", StringComparison.OrdinalIgnoreCase) ||
-                line.Contains("Listening on port", StringComparison.OrdinalIgnoreCase))
+                line.Contains("Listening on port", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("connecting", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("authenticated", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("joined", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("left", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("kick", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("warn", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("[Server", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("[Univers", StringComparison.OrdinalIgnoreCase))
             {
                 TShock.Log.ConsoleInfo($"[MW:{rt.WorldId}] {line}");
             }
