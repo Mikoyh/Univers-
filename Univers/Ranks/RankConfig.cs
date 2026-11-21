@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
 using TShockAPI;
+using Univers;
 
 namespace Skynomi.Ranks
 {
@@ -168,7 +169,7 @@ namespace Skynomi.Ranks
 
         public static RankConfig Read()
         {
-            string path = Path.Combine(TShock.SavePath, "Skynomi", "RankConfig.json");
+            string path = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "Skynomi", "RankConfig.json");
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);

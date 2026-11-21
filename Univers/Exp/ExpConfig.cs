@@ -115,7 +115,7 @@ namespace Univers.Exp
 
         public static ExpConfig Read()
         {
-            string dir = Path.Combine(TShock.SavePath, "Univers");
+            string dir = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "Univers");
             string path = Path.Combine(dir, "ExpConfig.json");
             Directory.CreateDirectory(dir);
 

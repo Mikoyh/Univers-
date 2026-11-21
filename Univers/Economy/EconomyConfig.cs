@@ -8,6 +8,7 @@ using System;
 using System.IO;
 using Newtonsoft.Json;
 using TShockAPI;
+using Univers;
 
 namespace Skynomi.Economy
 {
@@ -23,7 +24,7 @@ namespace Skynomi.Economy
         public double TransferFeePercent { get; set; } = 0.0; // Pajak transfer antar pemain (0% default)
         public long MinimumPayAmount { get; set; } = 10;
 
-        public static string ConfigPath => Path.Combine(TShock.SavePath, "Skynomi", "EconomyConfig.json");
+        public static string ConfigPath => Path.Combine(UniversPlugin.GetEffectiveSavePath(), "Skynomi", "EconomyConfig.json");
 
         public static EconomyConfig Read()
         {

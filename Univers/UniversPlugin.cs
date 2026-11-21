@@ -47,12 +47,18 @@ namespace Univers
             Order = 1;
         }
 
+        public static string GetEffectiveSavePath()
+        {
+            string? master = Environment.GetEnvironmentVariable("UNIVERS_MASTER_SAVEPATH");
+            return !string.IsNullOrWhiteSpace(master) ? master : TShock.SavePath;
+        }
+
         public override void Initialize()
         {
             Instance = this;
             GeneralHooks.ReloadEvent += OnReload;
 
-            string savePath = TShock.SavePath;
+            string savePath = GetEffectiveSavePath();
             Directory.CreateDirectory(Path.Combine(savePath, "Skynomi"));
             Directory.CreateDirectory(Path.Combine(savePath, "Univers"));
 

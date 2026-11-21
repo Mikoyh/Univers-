@@ -10,6 +10,7 @@ using System.Linq;
 using System.Collections.Generic;
 using LiteDB;
 using TShockAPI;
+using Univers;
 
 namespace Skynomi.Economy
 {
@@ -35,7 +36,7 @@ namespace Skynomi.Economy
 
         public EconomyDatabase()
         {
-            string dbDir = Path.Combine(TShock.SavePath, "Skynomi");
+            string dbDir = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "Skynomi");
             if (!Directory.Exists(dbDir)) Directory.CreateDirectory(dbDir);
             string dbPath = Path.Combine(dbDir, "skynomi_economy.db");
 

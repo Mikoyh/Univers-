@@ -256,6 +256,7 @@ namespace Univers.MultiWorld
                 Directory.CreateDirectory(cfgDir);
                 Directory.CreateDirectory(logDir);
                 PrepareChildTShockConfig(cfgDir, def.Port);
+                EnsureChildServerPluginsLink(instDir);
 
                 var argList = new List<string>();
                 if (!string.IsNullOrEmpty(baseArgs))
@@ -282,7 +283,7 @@ namespace Univers.MultiWorld
                 {
                     FileName = exePath,
                     Arguments = string.Join(" ", argList),
-                    WorkingDirectory = AppContext.BaseDirectory,
+                    WorkingDirectory = instDir,
                     UseShellExecute = false,
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
@@ -294,6 +295,7 @@ namespace Univers.MultiWorld
                 psi.Environment["UNIVERS_MASTER_IPC_PORT"] = _config.ControlIpcPort.ToString();
                 psi.Environment["UNIVERS_MASTER_PORT"] = _actualMasterPort.ToString();
                 psi.Environment["UNIVERS_CHILD_PORT"] = def.Port.ToString();
+                psi.Environment["UNIVERS_MASTER_SAVEPATH"] = UniversPlugin.GetEffectiveSavePath();
 
                 rt.State = WorldRuntimeState.Booting;
                 rt.IpcRegistered = false;
@@ -671,7 +673,7 @@ namespace Univers.MultiWorld
                 string targetCfgPath = Path.Combine(cfgDir, "config.json");
                 if (File.Exists(targetCfgPath)) return;
 
-                string masterCfgPath = Path.Combine(TShock.SavePath, "config.json");
+                string masterCfgPath = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "config.json");
                 JObject root;
                 if (File.Exists(masterCfgPath))
                 {
@@ -700,6 +702,53 @@ namespace Univers.MultiWorld
             catch (Exception ex)
             {
                 TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menyiapkan config child: {ex.Message}");
+            }
+        }
+
+        private static void EnsureChildServerPluginsLink(string instDir)
+        {
+            string sourcePlugins = Path.Combine(AppContext.BaseDirectory, "ServerPlugins");
+            if (!Directory.Exists(sourcePlugins)) return;
+
+            string targetPlugins = Path.Combine(instDir, "ServerPlugins");
+            if (Directory.Exists(targetPlugins)) return;
+
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    var mk = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = $"/c mklink /J \"{targetPlugins}\" \"{sourcePlugins}\"",
+                        CreateNoWindow = true,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    });
+                    mk?.WaitForExit(3000);
+                    if (Directory.Exists(targetPlugins)) return;
+                }
+                else
+                {
+                    Directory.CreateSymbolicLink(targetPlugins, sourcePlugins);
+                    if (Directory.Exists(targetPlugins)) return;
+                }
+            }
+            catch { }
+
+            try
+            {
+                Directory.CreateDirectory(targetPlugins);
+                foreach (string file in Directory.GetFiles(sourcePlugins, "*.dll"))
+                {
+                    string dst = Path.Combine(targetPlugins, Path.GetFileName(file));
+                    File.Copy(file, dst, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menautkan ServerPlugins ke child: {ex.Message}");
             }
         }
 

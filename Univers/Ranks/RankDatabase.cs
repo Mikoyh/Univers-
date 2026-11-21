@@ -3,6 +3,7 @@ using System.IO;
 using System.Collections.Generic;
 using LiteDB;
 using TShockAPI;
+using Univers;
 
 namespace Skynomi.Ranks
 {
@@ -36,7 +37,7 @@ namespace Skynomi.Ranks
 
         public RankDatabase()
         {
-            string dbDir = Path.Combine(TShock.SavePath, "Skynomi");
+            string dbDir = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "Skynomi");
             if (!Directory.Exists(dbDir)) Directory.CreateDirectory(dbDir);
             string dbPath = Path.Combine(dbDir, "skynomi_ranks.db");
 

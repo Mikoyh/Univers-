@@ -13,7 +13,7 @@ namespace Univers.Exp
 
         public ExpDatabase()
         {
-            string dbDir = Path.Combine(TShock.SavePath, "Univers");
+            string dbDir = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "Univers");
             if (!Directory.Exists(dbDir)) Directory.CreateDirectory(dbDir);
             string dbPath = Path.Combine(dbDir, "univers_exp.db");
 
