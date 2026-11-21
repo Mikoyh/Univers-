@@ -11,9 +11,12 @@ echo   Child Worlds  : Port 7779+ (Auto-Start / Sleep)
 echo ==================================================
 
 set "TSHOCK_DIR="
-if exist "tshock_path.txt" set /p TSHOCK_DIR=<tshock_path.txt
+if exist "tshock_path.txt" (
+    for /f "usebackq delims=" %%A in ("tshock_path.txt") do (
+        if not defined TSHOCK_DIR set "TSHOCK_DIR=%%A"
+    )
+)
 if defined TSHOCK_DIR set "TSHOCK_DIR=%TSHOCK_DIR:"=%"
-
 if not defined TSHOCK_DIR if exist "..\TShock.Server.exe" set "TSHOCK_DIR=.."
 if not defined TSHOCK_DIR if exist "TShock.Server.exe" set "TSHOCK_DIR=."
 
@@ -24,6 +27,7 @@ if not defined TSHOCK_DIR (
     exit /b 1
 )
 
+if "%TSHOCK_DIR:~-1%"=="\" set "TSHOCK_DIR=%TSHOCK_DIR:~0,-1%"
 for %%I in ("%TSHOCK_DIR%") do (
     set "LEAF_NAME=%%~nxI"
     set "PARENT_DIR=%%~dpI"
@@ -47,7 +51,11 @@ if not defined SERVER_EXE (
 )
 
 set "WORLD_FILE="
-if exist "tshock_world.txt" set /p WORLD_FILE=<tshock_world.txt
+if exist "tshock_world.txt" (
+    for /f "usebackq delims=" %%W in ("tshock_world.txt") do (
+        if not defined WORLD_FILE set "WORLD_FILE=%%W"
+    )
+)
 if defined WORLD_FILE set "WORLD_FILE=%WORLD_FILE:"=%"
 
 if defined WORLD_FILE if exist "%WORLD_FILE%" (
