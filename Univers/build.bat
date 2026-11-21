@@ -116,6 +116,10 @@ if exist "tshock_world.txt" (
 if defined WORLD_FILE call :trim WORLD_FILE
 if defined WORLD_FILE set "WORLD_FILE=%WORLD_FILE:"=%"
 
+set "DOTNET_TieredPGO=0"
+set "DOTNET_TieredCompilation=0"
+set "DOTNET_TC_QuickJit=0"
+
 if defined WORLD_FILE (
     if exist "%WORLD_FILE%" (
         echo [4/4] Menjalankan Master Hub ^(Port 7778^) + Gateway Proxy ^(Port 7777^)...

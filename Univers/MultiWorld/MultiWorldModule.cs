@@ -695,6 +695,10 @@ namespace Univers.MultiWorld
 
             _recentTransfers[playerName] = DateTime.UtcNow.AddSeconds(12);
             TicketStore.IssueTicket(playerName, accountName, groupName, uuid, session.CurrentWorldId, target.Id);
+            if (!target.IsHub)
+            {
+                ProcessManager?.MarkWorldPlayerArriving(target.Id, 90);
+            }
 
             var result = await Proxy.SwitchPlayerWorldAsync(playerName, target.Id, targetPort, uuid, hubSlot, currentWorldGuess);
             if (result.Ok)
@@ -720,7 +724,7 @@ namespace Univers.MultiWorld
                 GroupName = groupName,
                 ClientUuid = uuid,
                 TargetWorldId = targetWorldId
-            }, timeoutMs: 65_000);
+            }, timeoutMs: 320_000);
 
             return (res.Success, res.Message);
         }
@@ -793,6 +797,10 @@ namespace Univers.MultiWorld
 
                             _recentTransfers[req.PlayerName] = DateTime.UtcNow.AddSeconds(12);
                             TicketStore.IssueTicket(req.PlayerName, req.AccountName, req.GroupName, req.ClientUuid, session.CurrentWorldId, target.Id);
+                            if (!target.IsHub)
+                            {
+                                ProcessManager?.MarkWorldPlayerArriving(target.Id, 90);
+                            }
                             var (okSw, msgSw) = await Proxy.SwitchPlayerWorldAsync(req.PlayerName, target.Id, targetPort);
                             if (okSw)
                             {
@@ -824,7 +832,7 @@ namespace Univers.MultiWorld
                     WorldId = CurrentWorldId,
                     AdminSubAction = subAction,
                     Args = args
-                }, timeoutMs: 65_000);
+                }, timeoutMs: 320_000);
             }
 
             return await HandleMasterAdminActionAsync(subAction, args);

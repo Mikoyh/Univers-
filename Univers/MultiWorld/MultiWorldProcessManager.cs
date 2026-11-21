@@ -38,9 +38,14 @@ namespace Univers.MultiWorld
         public int PlayerCount { get; set; } = 0;
         public List<string> OnlinePlayerNames { get; set; } = new();
         public DateTime StartedUtc { get; set; } = DateTime.UtcNow;
+        public DateTime OnlineSinceUtc { get; set; } = DateTime.UtcNow;
         public DateTime LastNonEmptyUtc { get; set; } = DateTime.UtcNow;
+        public DateTime KeepAliveUntilUtc { get; set; } = DateTime.UtcNow;
         public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
         public bool IpcRegistered { get; set; } = false;
+        public bool LastBootWasAutoCreate { get; set; } = false;
+        public int LastExitCode { get; set; } = 0;
+        public string LastProgressLine { get; set; } = string.Empty;
         public readonly Queue<string> RecentLogs = new();
         public readonly object LogLock = new();
         public readonly SemaphoreSlim LifecycleLock = new(1, 1);
@@ -91,18 +96,34 @@ namespace Univers.MultiWorld
         public void OnChildRegistered(string worldId, int port, int callbackPort, int pid, int playerCount, List<string>? playerNames)
         {
             var rt = GetOrCreateRuntime(worldId, port);
+            DateTime now = DateTime.UtcNow;
             rt.Port = port;
             if (callbackPort > 0) rt.CallbackPort = callbackPort;
             rt.IpcRegistered = true;
             rt.State = WorldRuntimeState.Running;
             rt.PlayerCount = playerCount;
             rt.OnlinePlayerNames = playerNames ?? new List<string>();
-            rt.LastHeartbeatUtc = DateTime.UtcNow;
-            if (playerCount > 0)
+            rt.LastHeartbeatUtc = now;
+            rt.OnlineSinceUtc = now;
+            rt.LastNonEmptyUtc = now;
+            if (rt.KeepAliveUntilUtc < now.AddSeconds(75))
             {
-                rt.LastNonEmptyUtc = DateTime.UtcNow;
+                rt.KeepAliveUntilUtc = now.AddSeconds(75);
             }
             TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Child '{worldId}' ONLINE (Port {port}, Callback {rt.CallbackPort}, PID {pid}).");
+        }
+
+        public void MarkWorldPlayerArriving(string worldId, int graceSeconds = 90)
+        {
+            if (_children.TryGetValue(worldId, out var rt))
+            {
+                DateTime now = DateTime.UtcNow;
+                rt.LastNonEmptyUtc = now;
+                if (rt.KeepAliveUntilUtc < now.AddSeconds(graceSeconds))
+                {
+                    rt.KeepAliveUntilUtc = now.AddSeconds(graceSeconds);
+                }
+            }
         }
 
         public void OnChildHeartbeat(string worldId, int callbackPort, int playerCount, List<string>? playerNames)
@@ -222,6 +243,8 @@ namespace Univers.MultiWorld
             await rt.LifecycleLock.WaitAsync();
             try
             {
+                rt.KeepAliveUntilUtc = DateTime.UtcNow.AddSeconds(90);
+
                 if (rt.Process != null && !rt.Process.HasExited && rt.State == WorldRuntimeState.Running)
                 {
                     rt.LastNonEmptyUtc = DateTime.UtcNow;
@@ -230,111 +253,168 @@ namespace Univers.MultiWorld
 
                 if (rt.Process != null && !rt.Process.HasExited && rt.State == WorldRuntimeState.Booting)
                 {
-                    // Tunggu proses boot yang sudah berjalan
-                    return await WaitUntilReadyAsync(def, rt);
+                    int existingTimeout = rt.LastBootWasAutoCreate
+                        ? Math.Max(_config.WakeTimeoutSeconds, 300)
+                        : Math.Max(_config.WakeTimeoutSeconds, 120);
+                    progressCallback?.Invoke($"World '{def.DisplayName}' sedang disiapkan, menunggu proses selesai...");
+                    return await WaitUntilReadyAsync(def, rt, existingTimeout, progressCallback);
                 }
 
-                // Bersihkan port jika masih terpakai
-                if (IsTcpPortListening(def.Port))
+                const int maxAttempts = 2;
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    def.Port = _config.AllocateNextFreePort();
-                    await SaveConfigAsync();
-                }
-
-                var (exePath, baseArgs) = ResolveServerExecutable();
-                if (string.IsNullOrEmpty(exePath))
-                {
-                    return (false, "TShock.Server.exe / TShock.Server.dll tidak ditemukan di folder server.");
-                }
-
-                string wldPath = GetWorldFilePath(def);
-                bool willGenerate = !File.Exists(wldPath);
-
-                string instDir = Path.Combine(_instancesDir, def.Id);
-                string cfgDir = Path.Combine(instDir, "config");
-                string logDir = Path.Combine(instDir, "logs");
-                Directory.CreateDirectory(cfgDir);
-                Directory.CreateDirectory(logDir);
-                PrepareChildTShockConfig(cfgDir, def.Port);
-                EnsureChildServerPluginsLink(instDir);
-
-                var argList = new List<string>();
-                if (!string.IsNullOrEmpty(baseArgs))
-                {
-                    argList.Add(baseArgs);
-                }
-
-                argList.Add($"-port {def.Port}");
-                argList.Add($"-world \"{wldPath}\"");
-                if (willGenerate)
-                {
-                    argList.Add($"-autocreate {def.GetSizeArg()}");
-                    argList.Add($"-worldname \"{SanitizeArgText(def.DisplayName)}\"");
-                    argList.Add($"-difficulty {def.GetDifficultyArg()}");
-                    argList.Add($"-worldevil {def.GetEvilArg()}");
-                    if (!string.IsNullOrWhiteSpace(def.Seed))
+                    if (IsTcpPortListening(def.Port))
                     {
-                        argList.Add($"-seed \"{SanitizeArgText(def.Seed)}\"");
+                        def.Port = _config.AllocateNextFreePort();
+                        await SaveConfigAsync();
                     }
-                }
-                argList.Add($"-configpath \"{cfgDir}\"");
-                argList.Add($"-logpath \"{logDir}\"");
-                argList.Add($"-players {_config.MaxPlayersPerChild}");
-                argList.Add("-noupnp");
 
-                var psi = new ProcessStartInfo
-                {
-                    FileName = exePath,
-                    Arguments = string.Join(" ", argList),
-                    WorkingDirectory = instDir,
-                    UseShellExecute = false,
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                    var (exePath, baseArgs) = ResolveServerExecutable();
+                    if (string.IsNullOrEmpty(exePath))
+                    {
+                        return (false, "TShock.Server.exe / TShock.Server.dll tidak ditemukan di folder server.");
+                    }
 
-                psi.Environment["UNIVERS_CHILD_WORLD"] = def.Id;
-                psi.Environment["UNIVERS_MASTER_IPC_PORT"] = _config.ControlIpcPort.ToString();
-                psi.Environment["UNIVERS_MASTER_PORT"] = _actualMasterPort.ToString();
-                psi.Environment["UNIVERS_CHILD_PORT"] = def.Port.ToString();
-                psi.Environment["UNIVERS_MASTER_SAVEPATH"] = UniversPlugin.GetEffectiveSavePath();
+                    string wldPath = GetWorldFilePath(def);
+                    bool willGenerate = !File.Exists(wldPath);
+                    if (!willGenerate)
+                    {
+                        try
+                        {
+                            if (new FileInfo(wldPath).Length < 1024)
+                            {
+                                File.Delete(wldPath);
+                                willGenerate = true;
+                            }
+                        }
+                        catch { }
+                    }
 
-                rt.State = WorldRuntimeState.Booting;
-                rt.IpcRegistered = false;
-                rt.PlayerCount = 0;
-                rt.Port = def.Port;
-                rt.StartedUtc = DateTime.UtcNow;
-                rt.LastNonEmptyUtc = DateTime.UtcNow;
-                lock (rt.LogLock) rt.RecentLogs.Clear();
+                    string instDir = Path.Combine(_instancesDir, def.Id);
+                    string cfgDir = Path.Combine(instDir, "config");
+                    string logDir = Path.Combine(instDir, "logs");
+                    Directory.CreateDirectory(cfgDir);
+                    Directory.CreateDirectory(logDir);
+                    PrepareChildTShockConfig(cfgDir, def.Port);
+                    EnsureChildServerPluginsLink(instDir);
 
-                progressCallback?.Invoke(willGenerate
-                    ? $"Membuat & membangunkan world baru '{def.DisplayName}' ({def.Size}/{def.Difficulty})..."
-                    : $"Membangunkan world '{def.DisplayName}'...");
+                    var argList = new List<string>();
+                    if (!string.IsNullOrEmpty(baseArgs))
+                    {
+                        argList.Add(baseArgs);
+                    }
 
-                var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-                proc.OutputDataReceived += (_, e) => HandleChildOutput(rt, e.Data, false);
-                proc.ErrorDataReceived += (_, e) => HandleChildOutput(rt, e.Data, true);
-                proc.Exited += (_, _) =>
-                {
-                    rt.State = WorldRuntimeState.Sleeping;
+                    argList.Add($"-port {def.Port}");
+                    argList.Add($"-world \"{wldPath}\"");
+                    if (willGenerate)
+                    {
+                        argList.Add($"-autocreate {def.GetSizeArg()}");
+                        argList.Add($"-worldname \"{SanitizeArgText(def.DisplayName)}\"");
+                        argList.Add($"-difficulty {def.GetDifficultyArg()}");
+                        argList.Add($"-worldevil {def.GetEvilArg()}");
+                        if (!string.IsNullOrWhiteSpace(def.Seed))
+                        {
+                            argList.Add($"-seed \"{SanitizeArgText(def.Seed)}\"");
+                        }
+                    }
+                    argList.Add($"-configpath \"{cfgDir}\"");
+                    argList.Add($"-logpath \"{logDir}\"");
+                    argList.Add($"-players {_config.MaxPlayersPerChild}");
+                    argList.Add("-noupnp");
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = exePath,
+                        Arguments = string.Join(" ", argList),
+                        WorkingDirectory = instDir,
+                        UseShellExecute = false,
+                        RedirectStandardInput = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    };
+
+                    psi.Environment["UNIVERS_CHILD_WORLD"] = def.Id;
+                    psi.Environment["UNIVERS_MASTER_IPC_PORT"] = _config.ControlIpcPort.ToString();
+                    psi.Environment["UNIVERS_MASTER_PORT"] = _actualMasterPort.ToString();
+                    psi.Environment["UNIVERS_CHILD_PORT"] = def.Port.ToString();
+                    psi.Environment["UNIVERS_MASTER_SAVEPATH"] = UniversPlugin.GetEffectiveSavePath();
+
+                    // Cegah CoreCLR 0x80131506 (konflik .NET 9 TieredPGO/TieredCompilation dengan MonoMod/OTAPI di DedServ)
+                    psi.Environment["DOTNET_TieredPGO"] = "0";
+                    psi.Environment["DOTNET_TieredCompilation"] = "0";
+                    psi.Environment["DOTNET_TC_QuickJit"] = "0";
+
+                    DateTime bootStart = DateTime.UtcNow;
+                    rt.State = WorldRuntimeState.Booting;
                     rt.IpcRegistered = false;
+                    rt.LastBootWasAutoCreate = willGenerate;
+                    rt.LastExitCode = 0;
+                    rt.LastProgressLine = string.Empty;
                     rt.PlayerCount = 0;
-                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Child '{def.Id}' berhenti (Sleep).");
-                };
+                    rt.Port = def.Port;
+                    rt.StartedUtc = bootStart;
+                    rt.OnlineSinceUtc = bootStart;
+                    rt.LastNonEmptyUtc = bootStart;
+                    rt.KeepAliveUntilUtc = bootStart.AddSeconds(willGenerate ? 360 : 150);
+                    lock (rt.LogLock) rt.RecentLogs.Clear();
 
-                if (!proc.Start())
-                {
-                    rt.State = WorldRuntimeState.Sleeping;
-                    return (false, $"Gagal menyalakan proses child untuk '{def.Id}'.");
+                    if (attempt == 1)
+                    {
+                        progressCallback?.Invoke(willGenerate
+                            ? $"Membuat & membangunkan world baru '{def.DisplayName}' ({def.Size}/{def.Difficulty}), estimasi 1-2 menit..."
+                            : $"Membangunkan world '{def.DisplayName}'...");
+                    }
+                    else
+                    {
+                        progressCallback?.Invoke($"Mencoba menyalakan ulang '{def.DisplayName}' (percobaan {attempt}/{maxAttempts})...");
+                    }
+
+                    var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                    proc.OutputDataReceived += (_, e) => HandleChildOutput(rt, e.Data, false);
+                    proc.ErrorDataReceived += (_, e) => HandleChildOutput(rt, e.Data, true);
+                    proc.Exited += (_, _) =>
+                    {
+                        try { rt.LastExitCode = proc.ExitCode; } catch { }
+                        rt.State = WorldRuntimeState.Sleeping;
+                        rt.IpcRegistered = false;
+                        rt.PlayerCount = 0;
+                        TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Child '{def.Id}' berhenti (Sleep).");
+                    };
+
+                    if (!proc.Start())
+                    {
+                        rt.State = WorldRuntimeState.Sleeping;
+                        return (false, $"Gagal menyalakan proses child untuk '{def.Id}'.");
+                    }
+
+                    proc.BeginOutputReadLine();
+                    proc.BeginErrorReadLine();
+                    rt.Process = proc;
+
+                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Menyalakan child '{def.Id}' (Port {def.Port}, AutoCreate={willGenerate}, Attempt={attempt})...");
+                    int effectiveTimeoutSec = willGenerate
+                        ? Math.Max(_config.WakeTimeoutSeconds, 300)
+                        : Math.Max(_config.WakeTimeoutSeconds, 120);
+
+                    var waitRes = await WaitUntilReadyAsync(def, rt, effectiveTimeoutSec, progressCallback);
+                    if (waitRes.Ok)
+                    {
+                        return waitRes;
+                    }
+
+                    bool exitedUnexpectedly = rt.Process == null || rt.Process.HasExited;
+                    if (attempt < maxAttempts && exitedUnexpectedly && !rt.IpcRegistered && !_disposed)
+                    {
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Child '{def.Id}' crash saat boot (ExitCode {rt.LastExitCode}). Retry otomatis...");
+                        await Task.Delay(750);
+                        continue;
+                    }
+
+                    return waitRes;
                 }
 
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-                rt.Process = proc;
-
-                TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Menyalakan child '{def.Id}' (Port {def.Port}, AutoCreate={willGenerate})...");
-                return await WaitUntilReadyAsync(def, rt);
+                return (false, $"Gagal menyalakan world '{def.Id}'.");
             }
             catch (Exception ex)
             {
@@ -347,9 +427,17 @@ namespace Univers.MultiWorld
             }
         }
 
-        private async Task<(bool Ok, string Message)> WaitUntilReadyAsync(WorldDefinition def, ManagedChildProcess rt)
+        private async Task<(bool Ok, string Message)> WaitUntilReadyAsync(
+            WorldDefinition def,
+            ManagedChildProcess rt,
+            int timeoutSeconds,
+            Action<string>? progressCallback = null)
         {
-            DateTime deadline = DateTime.UtcNow.AddSeconds(_config.WakeTimeoutSeconds);
+            DateTime startUtc = DateTime.UtcNow;
+            DateTime deadline = startUtc.AddSeconds(timeoutSeconds);
+            DateTime nextProgressUtc = startUtc.AddSeconds(12);
+            string lastReportedProgress = string.Empty;
+
             while (DateTime.UtcNow < deadline && !_disposed)
             {
                 if (rt.Process == null || rt.Process.HasExited)
@@ -361,9 +449,32 @@ namespace Univers.MultiWorld
 
                 if (rt.IpcRegistered && IsTcpPortListening(def.Port))
                 {
+                    DateTime readyNow = DateTime.UtcNow;
                     rt.State = WorldRuntimeState.Running;
-                    rt.LastNonEmptyUtc = DateTime.UtcNow;
+                    rt.OnlineSinceUtc = readyNow;
+                    rt.LastNonEmptyUtc = readyNow;
+                    if (rt.KeepAliveUntilUtc < readyNow.AddSeconds(75))
+                    {
+                        rt.KeepAliveUntilUtc = readyNow.AddSeconds(75);
+                    }
                     return (true, $"World '{def.Id}' aktif di port {def.Port}.");
+                }
+
+                DateTime now = DateTime.UtcNow;
+                if (progressCallback != null && now >= nextProgressUtc)
+                {
+                    nextProgressUtc = now.AddSeconds(14);
+                    int elapsedSec = Math.Max(1, (int)(now - startUtc).TotalSeconds);
+                    string progressLine = rt.LastProgressLine;
+                    if (!string.IsNullOrWhiteSpace(progressLine) && !progressLine.Equals(lastReportedProgress, StringComparison.Ordinal))
+                    {
+                        lastReportedProgress = progressLine;
+                        progressCallback.Invoke($"Menyiapkan '{def.DisplayName}' ({elapsedSec}d): {progressLine}...");
+                    }
+                    else
+                    {
+                        progressCallback.Invoke($"Masih menyiapkan '{def.DisplayName}' ({elapsedSec}d/{timeoutSeconds}d), harap tunggu...");
+                    }
                 }
 
                 await Task.Delay(350);
@@ -371,11 +482,18 @@ namespace Univers.MultiWorld
 
             if (rt.IpcRegistered && IsTcpPortListening(def.Port))
             {
+                DateTime readyNow = DateTime.UtcNow;
                 rt.State = WorldRuntimeState.Running;
+                rt.OnlineSinceUtc = readyNow;
+                rt.LastNonEmptyUtc = readyNow;
+                if (rt.KeepAliveUntilUtc < readyNow.AddSeconds(75))
+                {
+                    rt.KeepAliveUntilUtc = readyNow.AddSeconds(75);
+                }
                 return (true, $"World '{def.Id}' aktif di port {def.Port}.");
             }
 
-            return (false, $"Timeout menunggu world '{def.Id}' bangun ({_config.WakeTimeoutSeconds} detik).");
+            return (false, $"Timeout menunggu world '{def.Id}' bangun ({timeoutSeconds} detik).");
         }
 
         public async Task<(bool Ok, string Message)> StopWorldAsync(string worldId)
@@ -594,11 +712,15 @@ namespace Univers.MultiWorld
                 if (timeoutMin <= 0) continue;
 
                 if (!_children.TryGetValue(def.Id, out var rt)) continue;
-                if (rt.Process == null || rt.Process.HasExited || rt.State != WorldRuntimeState.Running) continue;
+                if (rt.Process == null || rt.Process.HasExited || rt.State != WorldRuntimeState.Running || !rt.IpcRegistered) continue;
                 if (rt.PlayerCount > 0) continue;
+                if (now < rt.KeepAliveUntilUtc) continue;
 
+                TimeSpan sinceOnline = now - rt.OnlineSinceUtc;
                 TimeSpan idle = now - rt.LastNonEmptyUtc;
-                if (idle >= TimeSpan.FromMinutes(timeoutMin))
+                TimeSpan threshold = TimeSpan.FromMinutes(timeoutMin);
+
+                if (sinceOnline >= threshold && idle >= threshold)
                 {
                     TShock.Log.ConsoleInfo($"[Univers.MultiWorld] World '{def.Id}' kosong selama {timeoutMin} menit -> Auto-Sleep (save & shutdown)...");
                     await StopWorldAsync(def.Id);
@@ -792,8 +914,19 @@ namespace Univers.MultiWorld
                 while (rt.RecentLogs.Count > 25) rt.RecentLogs.Dequeue();
             }
 
+            if (line.Contains("Generating", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Resetting", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Settling", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Saving", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Loading", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Listening on port", StringComparison.OrdinalIgnoreCase))
+            {
+                rt.LastProgressLine = line.Trim();
+            }
+
             if (isError ||
                 line.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Fatal error", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("Generating", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("Listening on port", StringComparison.OrdinalIgnoreCase))
             {

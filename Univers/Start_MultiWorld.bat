@@ -58,6 +58,10 @@ if exist "tshock_world.txt" (
 )
 if defined WORLD_FILE set "WORLD_FILE=%WORLD_FILE:"=%"
 
+set "DOTNET_TieredPGO=0"
+set "DOTNET_TieredCompilation=0"
+set "DOTNET_TC_QuickJit=0"
+
 if defined WORLD_FILE if exist "%WORLD_FILE%" (
     "%SERVER_EXE%" -world "%WORLD_FILE%" -port 7778 -players 32 -noupnp
     goto :done

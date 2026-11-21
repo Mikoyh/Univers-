@@ -102,8 +102,8 @@ namespace Univers.MultiWorld
         // Otomatis save & matikan child world jika kosong selama N menit
         public int EmptyShutdownMinutes { get; set; } = 5;
 
-        // Batas tunggu saat membangunkan child world yang sedang tidur
-        public int WakeTimeoutSeconds { get; set; } = 60;
+        // Batas tunggu saat membangunkan child world yang sedang tidur (detik)
+        public int WakeTimeoutSeconds { get; set; } = 180;
 
         public int MaxPlayersPerChild { get; set; } = 32;
 
@@ -131,6 +131,10 @@ namespace Univers.MultiWorld
                     var loaded = JsonConvert.DeserializeObject<MultiWorldConfig>(File.ReadAllText(path));
                     if (loaded != null)
                     {
+                        if (loaded.WakeTimeoutSeconds <= 60)
+                        {
+                            loaded.WakeTimeoutSeconds = 180;
+                        }
                         loaded.Normalize();
                         loaded.Save(path);
                         return loaded;
@@ -176,7 +180,7 @@ namespace Univers.MultiWorld
             ChildPortStart = Math.Clamp(ChildPortStart, 1024, 65000);
             ControlIpcPort = Math.Clamp(ControlIpcPort, 1024, 65500);
             EmptyShutdownMinutes = Math.Clamp(EmptyShutdownMinutes, 1, 1440);
-            WakeTimeoutSeconds = Math.Clamp(WakeTimeoutSeconds, 15, 180);
+            WakeTimeoutSeconds = Math.Clamp(WakeTimeoutSeconds, 30, 600);
             MaxPlayersPerChild = Math.Clamp(MaxPlayersPerChild, 2, 255);
             HubWorldId = SanitizeWorldId(string.IsNullOrWhiteSpace(HubWorldId) ? "lobby" : HubWorldId);
             if (string.IsNullOrWhiteSpace(HubWorldId)) HubWorldId = "lobby";
