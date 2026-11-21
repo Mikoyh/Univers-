@@ -10,34 +10,34 @@ namespace Univers.Exp
     public class ExpConfig
     {
         [JsonProperty("Base Exp For Level 1")]
-        public int BaseExp { get; set; } = 20;
+        public int BaseExp { get; set; } = 25;
 
         [JsonProperty("Linear Step Addition")]
-        public double LinearStep { get; set; } = 3.5;
+        public double LinearStep { get; set; } = 8.0;
 
         [JsonProperty("Growth Scale Factor")]
-        public double GrowthScale { get; set; } = 0.14;
+        public double GrowthScale { get; set; } = 1.2;
 
         [JsonProperty("Growth Exponent (Curvature)")]
-        public double GrowthExponent { get; set; } = 1.75;
+        public double GrowthExponent { get; set; } = 2.0;
 
         [JsonProperty("Chat Exp Min")]
         public int ChatExpMin { get; set; } = 3;
 
         [JsonProperty("Chat Exp Max")]
-        public int ChatExpMax { get; set; } = 8;
+        public int ChatExpMax { get; set; } = 7;
 
         [JsonProperty("Chat Exp Cooldown Seconds")]
         public int ChatCooldownSeconds { get; set; } = 15;
 
         [JsonProperty("Mob Exp Min")]
-        public int MobExpMin { get; set; } = 8;
+        public int MobExpMin { get; set; } = 6;
 
         [JsonProperty("Mob Exp Max")]
-        public int MobExpMax { get; set; } = 14;
+        public int MobExpMax { get; set; } = 11;
 
         [JsonProperty("Boss Exp Multiplier")]
-        public double BossExpMultiplier { get; set; } = 35;
+        public double BossExpMultiplier { get; set; } = 30;
 
         [JsonProperty("Enable Custom Chat Format")]
         public bool EnableChatFormat { get; set; } = true;
@@ -68,6 +68,13 @@ namespace Univers.Exp
 
             int diff = level - 1;
             double value = BaseExp + (LinearStep * diff) + (GrowthScale * Math.Pow(diff, GrowthExponent));
+
+            // FASE EARLY-MID (Lv 11+): Lv 1-10 tetap santai/cepat, mulai Lv 11+ naik bertahap agar Lv 20-30 terasa menantang
+            if (level >= 11)
+            {
+                int diff11 = level - 10;
+                value += (45.0 * diff11) + (12.0 * Math.Pow(diff11, 2.05));
+            }
 
             // FASE MID-LATE (Lv 500+): Tambahan kurva bertahap selaras Rank Stellar-Astral
             if (level >= 500)
@@ -132,11 +139,18 @@ namespace Univers.Exp
                     changed = true;
                 }
 
-                // Migrasi kurva EXP lama yang terlalu berat (Lv.30 = ~302k EXP) ke kurva baru (~2.5k EXP)
-                if (loaded.BaseExp == 35 &&
+                // Migrasi kurva EXP lama (terlalu berat maupun terlalu mudah) ke kurva seimbang Lv.1-10 ez & Lv.20-30+ menantang
+                bool isOldHeavyCurve = loaded.BaseExp == 35 &&
                     Math.Abs(loaded.LinearStep - 25.0) < 0.01 &&
                     Math.Abs(loaded.GrowthScale - 15.5) < 0.01 &&
-                    Math.Abs(loaded.GrowthExponent - 2.0) < 0.01)
+                    Math.Abs(loaded.GrowthExponent - 2.0) < 0.01;
+
+                bool isOldEasyCurve = loaded.BaseExp == 20 &&
+                    Math.Abs(loaded.LinearStep - 3.5) < 0.01 &&
+                    Math.Abs(loaded.GrowthScale - 0.14) < 0.01 &&
+                    Math.Abs(loaded.GrowthExponent - 1.75) < 0.01;
+
+                if (isOldHeavyCurve || isOldEasyCurve)
                 {
                     var def = new ExpConfig();
                     loaded.BaseExp = def.BaseExp;
@@ -147,6 +161,7 @@ namespace Univers.Exp
                     loaded.ChatExpMax = def.ChatExpMax;
                     loaded.MobExpMin = def.MobExpMin;
                     loaded.MobExpMax = def.MobExpMax;
+                    loaded.BossExpMultiplier = def.BossExpMultiplier;
                     changed = true;
                 }
 

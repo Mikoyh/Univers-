@@ -450,6 +450,13 @@ namespace Univers.MultiWorld
             {
                 // Fresh login ke server Hub -> beritahu child worlds lain bahwa player online di server
                 NotifyMasterPresenceEvent("server_join", player.Name, CurrentWorldId);
+
+                if (Proxy != null && Proxy.IsListening &&
+                    Proxy.FindSession(player.Name, player.UUID, player.Index, CurrentWorldId) == null)
+                {
+                    int hubPort = ResolveListenPort(Config.MasterWorldPort);
+                    player.SendWarningMessage($"[MultiWorld] Kamu masuk lewat port langsung ({hubPort}). Konek ke port {Proxy.ListenPort} agar bisa /mw tp pindah world!");
+                }
             }
 
             // Kirim indikator pemain online di world lain agar tidak terasa sepi
@@ -648,10 +655,15 @@ namespace Univers.MultiWorld
                 return (false, "Gateway Proxy MultiWorld tidak aktif.");
             }
 
-            var session = Proxy.FindSessionByPlayerName(playerName);
+            var hubPlayer = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(playerName, StringComparison.OrdinalIgnoreCase));
+            int? hubSlot = hubPlayer?.Index;
+            string currentWorldGuess = hubPlayer != null ? CurrentWorldId : string.Empty;
+
+            var session = Proxy.FindSession(playerName, uuid, hubSlot, currentWorldGuess);
             if (session == null)
             {
-                return (false, $"Kamu terhubung langsung tanpa Gateway Proxy! Konek ulang ke port Proxy {Proxy.ListenPort} agar bisa pindah world seamless.");
+                int hubPort = ResolveListenPort(Config.MasterWorldPort);
+                return (false, $"Kamu terhubung langsung ke port {hubPort} (bukan Gateway Proxy)! Konek ulang di Terraria pakai port {Proxy.ListenPort} agar bisa pindah world.");
             }
 
             if (session.CurrentWorldId.Equals(target.Id, StringComparison.OrdinalIgnoreCase))
@@ -684,7 +696,7 @@ namespace Univers.MultiWorld
             _recentTransfers[playerName] = DateTime.UtcNow.AddSeconds(12);
             TicketStore.IssueTicket(playerName, accountName, groupName, uuid, session.CurrentWorldId, target.Id);
 
-            var result = await Proxy.SwitchPlayerWorldAsync(playerName, target.Id, targetPort);
+            var result = await Proxy.SwitchPlayerWorldAsync(playerName, target.Id, targetPort, uuid, hubSlot, currentWorldGuess);
             if (result.Ok)
             {
                 _ = HandleMasterPresenceEventAsync("world_switch", playerName, target.Id);

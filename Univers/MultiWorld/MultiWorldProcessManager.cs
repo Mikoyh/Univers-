@@ -693,7 +693,7 @@ namespace Univers.MultiWorld
                 settings["ServerPort"] = childPort;
                 settings["RequireLogin"] = false;
                 settings["AutoSave"] = true;
-                settings["DisableLoginBeforeJoin"] = false;
+                settings["DisableLoginBeforeJoin"] = true;
 
                 File.WriteAllText(targetCfgPath, root.ToString(Formatting.Indented));
             }

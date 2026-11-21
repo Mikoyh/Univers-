@@ -158,10 +158,55 @@ namespace Univers.MultiWorld
 
         public ProxySession? FindSessionByPlayerName(string playerName)
         {
-            if (string.IsNullOrWhiteSpace(playerName)) return null;
-            return _sessions.Values.FirstOrDefault(s =>
-                !s.IsClosed &&
-                s.PlayerName.Equals(playerName, StringComparison.OrdinalIgnoreCase));
+            return FindSession(playerName, null, null, null);
+        }
+
+        public ProxySession? FindSession(string playerName, string? clientUuid = null, int? backendSlot = null, string? currentWorldId = null)
+        {
+            if (!string.IsNullOrWhiteSpace(playerName))
+            {
+                var byName = _sessions.Values.FirstOrDefault(s =>
+                    !s.IsClosed &&
+                    !string.IsNullOrWhiteSpace(s.PlayerName) &&
+                    s.PlayerName.Equals(playerName, StringComparison.OrdinalIgnoreCase));
+                if (byName != null) return byName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(clientUuid))
+            {
+                var byUuid = _sessions.Values.FirstOrDefault(s =>
+                    !s.IsClosed &&
+                    !string.IsNullOrWhiteSpace(s.ClientUuid) &&
+                    s.ClientUuid.Equals(clientUuid, StringComparison.OrdinalIgnoreCase));
+                if (byUuid != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(playerName) && string.IsNullOrWhiteSpace(byUuid.PlayerName))
+                    {
+                        byUuid.PlayerName = playerName;
+                    }
+                    return byUuid;
+                }
+            }
+
+            if (backendSlot.HasValue && backendSlot.Value >= 0 && backendSlot.Value < 255)
+            {
+                byte slotByte = (byte)backendSlot.Value;
+                var bySlot = _sessions.Values.FirstOrDefault(s =>
+                    !s.IsClosed &&
+                    s.BackendSlot == slotByte &&
+                    (string.IsNullOrWhiteSpace(currentWorldId) ||
+                     s.CurrentWorldId.Equals(currentWorldId, StringComparison.OrdinalIgnoreCase)));
+                if (bySlot != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(playerName) && string.IsNullOrWhiteSpace(bySlot.PlayerName))
+                    {
+                        bySlot.PlayerName = playerName;
+                    }
+                    return bySlot;
+                }
+            }
+
+            return null;
         }
 
         private async Task RunSessionAsync(ProxySession session)
@@ -258,9 +303,15 @@ namespace Univers.MultiWorld
             }
         }
 
-        public async Task<(bool Ok, string Message)> SwitchPlayerWorldAsync(string playerName, string targetWorldId, int targetPort)
+        public async Task<(bool Ok, string Message)> SwitchPlayerWorldAsync(
+            string playerName,
+            string targetWorldId,
+            int targetPort,
+            string? clientUuid = null,
+            int? backendSlot = null,
+            string? currentWorldId = null)
         {
-            var session = FindSessionByPlayerName(playerName);
+            var session = FindSession(playerName, clientUuid, backendSlot, currentWorldId);
             if (session == null)
             {
                 return (false, $"Sesi proxy untuk '{playerName}' tidak ditemukan. Pastikan kamu terhubung melalui Gateway Proxy (Port {ListenPort}).");
@@ -348,6 +399,17 @@ namespace Univers.MultiWorld
                     }
 
                     TrackBackendEntityPacket(session, srvPkt);
+
+                    if (srvId == 49) // CompleteConnection -> aktifkan forwarding sebelum Client mengirim Spawn (12)
+                    {
+                        session.CurrentWorldId = targetWorldId;
+                        session.IsSwitching = false;
+                        byte[] mappedSpawn = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
+                        await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedSpawn, session.Cts.Token);
+                        completedSpawn = true;
+                        break;
+                    }
+
                     byte[] mapped = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
                     await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mapped, session.Cts.Token);
 
@@ -357,20 +419,12 @@ namespace Univers.MultiWorld
                         byte[] reqTiles = BuildRequestEssentialTilesPacket(-1, -1);
                         await SendRawAsync(newStream, reqTiles, session.Cts.Token);
                     }
-                    else if (srvId == 49) // CompleteConnection -> Client siap spawn!
-                    {
-                        completedSpawn = true;
-                        break;
-                    }
                 }
 
                 if (!completedSpawn)
                 {
                     return (false, $"Timeout memuat data world '{targetWorldId}'.");
                 }
-
-                session.CurrentWorldId = targetWorldId;
-                session.IsSwitching = false;
 
                 // Jalankan pump loop baru untuk Backend B
                 _ = PumpBackendToClientAsync(session, newBackend, newStream);
@@ -609,18 +663,28 @@ namespace Univers.MultiWorld
 
         private static string TryReadPlayerNameFromPacket4(byte[] packet)
         {
-            try
+            // Packet 4: [len(2)][id=4(1)][whoAmI(1)][skinVariant(1)][hair(1)][7-bit string name] (atau offset +1/+2 jika ada field baru)
+            foreach (int offset in new[] { 6, 7, 8 })
             {
-                // Packet 4: [len(2)][id=4(1)][whoAmI(1)][skinVariant(1)][hair(1)][7-bit string name]
-                if (packet.Length < 7) return string.Empty;
-                using var ms = new MemoryStream(packet, 6, packet.Length - 6);
-                using var br = new BinaryReader(ms, Encoding.UTF8);
-                return br.ReadString();
+                try
+                {
+                    if (packet.Length <= offset + 1) continue;
+                    int strLen = packet[offset];
+                    if (strLen <= 0 || strLen > 24 || offset + 1 + strLen > packet.Length) continue;
+
+                    using var ms = new MemoryStream(packet, offset, packet.Length - offset);
+                    using var br = new BinaryReader(ms, Encoding.UTF8);
+                    string candidate = br.ReadString();
+                    if (!string.IsNullOrWhiteSpace(candidate) && candidate.All(c => !char.IsControl(c)))
+                    {
+                        return candidate;
+                    }
+                }
+                catch
+                {
+                }
             }
-            catch
-            {
-                return string.Empty;
-            }
+            return string.Empty;
         }
 
         private static string TryReadPacketString(byte[] packet, int offset)
