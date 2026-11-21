@@ -796,13 +796,14 @@ namespace Univers.MultiWorld
             try
             {
                 string targetCfgPath = Path.Combine(cfgDir, "config.json");
-                if (File.Exists(targetCfgPath)) return;
+                string sourcePath = File.Exists(targetCfgPath)
+                    ? targetCfgPath
+                    : Path.Combine(UniversPlugin.GetEffectiveSavePath(), "config.json");
 
-                string masterCfgPath = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "config.json");
                 JObject root;
-                if (File.Exists(masterCfgPath))
+                if (File.Exists(sourcePath))
                 {
-                    root = JObject.Parse(File.ReadAllText(masterCfgPath));
+                    root = JObject.Parse(File.ReadAllText(sourcePath));
                 }
                 else
                 {

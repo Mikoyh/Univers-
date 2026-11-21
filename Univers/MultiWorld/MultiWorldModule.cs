@@ -440,7 +440,15 @@ namespace Univers.MultiWorld
             if (transferred || hasPendingClear)
             {
                 int who = player.Index;
-                _mainThreadQueue.Enqueue(() => ClearInactiveEntitiesForPlayer(who));
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    ClearInactiveEntitiesForPlayer(who);
+                    var p = TShock.Players[who];
+                    if (p != null && p.Active && p.RealPlayer)
+                    {
+                        p.Teleport(Main.spawnTileX * 16f, Math.Max(10, Main.spawnTileY - 3) * 16f);
+                    }
+                });
 
                 var worldDef = Config.GetWorld(CurrentWorldId);
                 string title = worldDef?.DisplayName ?? CurrentWorldId;

@@ -9,9 +9,28 @@ echo ==================================================
 if exist "..\.git" (
     echo [1/4] Menarik update terbaru dari GitHub...
     git -C .. pull --ff-only
+    if errorlevel 1 (
+        echo.
+        echo [ ERROR ] Gagal menarik update dari GitHub!
+        echo Jalankan perintah ini di folder repo lalu buka build.bat lagi:
+        echo     git checkout -- Univers/build.bat Univers/Start_MultiWorld.bat ^&^& git pull
+        echo ^(Atau jalankan: git reset --hard origin/main jika ingin menimpa semua file lokal^)
+        popd
+        pause
+        exit /b 1
+    )
 ) else if exist ".git" (
     echo [1/4] Menarik update terbaru dari GitHub...
     git pull --ff-only
+    if errorlevel 1 (
+        echo.
+        echo [ ERROR ] Gagal menarik update dari GitHub!
+        echo Jalankan perintah ini lalu buka build.bat lagi:
+        echo     git checkout -- build.bat Start_MultiWorld.bat ^&^& git pull
+        popd
+        pause
+        exit /b 1
+    )
 ) else (
     echo [1/4] Folder git tidak ditemukan, melewati git pull.
 )

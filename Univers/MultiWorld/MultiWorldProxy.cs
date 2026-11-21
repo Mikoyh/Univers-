@@ -50,6 +50,7 @@ namespace Univers.MultiWorld
         public byte[]? PlayerHpPacket;
         public byte[]? PlayerManaPacket;
         public byte[]? PlayerBuffPacket;
+        public byte[]? PlayerSpawnPacket;
         public readonly Dictionary<short, byte[]> PlayerSlotPackets = new();
         public readonly object CacheLock = new();
 
@@ -218,10 +219,8 @@ namespace Univers.MultiWorld
                 session.Backend = backend;
                 session.BackendStream = backend.GetStream();
 
-                Task clientToBackend = PumpClientToBackendAsync(session);
-                Task backendToClient = PumpBackendToClientAsync(session, backend, session.BackendStream);
-
-                await Task.WhenAny(clientToBackend, backendToClient);
+                _ = PumpBackendToClientAsync(session, backend, session.BackendStream);
+                await PumpClientToBackendAsync(session);
             }
             catch
             {
@@ -245,7 +244,7 @@ namespace Univers.MultiWorld
 
                 if (session.IsSwitching)
                 {
-                    // Selama masa switch ~300ms, buang paket gerak/gameplay sementara agar tidak nyasar ke socket lama
+                    // Selama masa switch, tunda/buang paket gameplay sementara agar tidak nyasar ke socket lama
                     continue;
                 }
 
@@ -269,7 +268,7 @@ namespace Univers.MultiWorld
                 }
                 catch
                 {
-                    break;
+                    packet = null;
                 }
 
                 if (packet == null)
@@ -279,7 +278,10 @@ namespace Univers.MultiWorld
                     {
                         return;
                     }
-                    break;
+
+                    // Backend aktif terputus tiba-tiba -> tutup sesi client dengan bersih
+                    session.Dispose();
+                    return;
                 }
 
                 if (session.IsSwitching || !ReferenceEquals(session.Backend, myBackend))
@@ -299,7 +301,12 @@ namespace Univers.MultiWorld
                 }
 
                 byte[] toClient = PrepareOutboundPacket(packet, session.BackendSlot, session.ClientSlot);
-                await SendPacketAsync(session.ClientStream, session.ClientWriteLock, toClient, ct);
+                bool sent = await SendPacketAsync(session.ClientStream, session.ClientWriteLock, toClient, ct);
+                if (!sent)
+                {
+                    session.Dispose();
+                    return;
+                }
             }
         }
 
@@ -324,6 +331,7 @@ namespace Univers.MultiWorld
 
             await session.SwitchLock.WaitAsync();
             TcpClient? newBackend = null;
+            bool oldBackendClosed = false;
             try
             {
                 if (session.IsClosed || session.ConnectRequestPacket == null || session.PlayerInfoPacket == null)
@@ -332,7 +340,8 @@ namespace Univers.MultiWorld
                 }
 
                 newBackend = new TcpClient { NoDelay = true };
-                using var connectCts = new CancellationTokenSource(8000);
+                using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(session.Cts.Token);
+                connectCts.CancelAfter(10_000);
                 await newBackend.ConnectAsync(IPAddress.Loopback, targetPort, connectCts.Token);
                 var newStream = newBackend.GetStream();
 
@@ -346,14 +355,18 @@ namespace Univers.MultiWorld
                     byte[]? hs = await ReadPacketAsync(newStream, connectCts.Token);
                     if (hs == null)
                     {
-                        return (false, "Backend tujuan menutup koneksi saat handshake.");
+                        string msg = "Backend tujuan menutup koneksi saat handshake.";
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                        return (false, msg);
                     }
 
                     byte id = hs[2];
                     if (id == 2) // Disconnect
                     {
                         string reason = TryReadPacketString(hs, 3);
-                        return (false, $"Ditolak oleh world '{targetWorldId}': {reason}");
+                        string msg = $"Ditolak oleh world '{targetWorldId}': {reason}";
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                        return (false, msg);
                     }
                     if (id == 3 && hs.Length >= 4)
                     {
@@ -368,6 +381,7 @@ namespace Univers.MultiWorld
                 var oldStream = session.BackendStream;
                 session.Backend = newBackend;
                 session.BackendStream = newStream;
+                oldBackendClosed = true;
 
                 try { oldStream?.Close(); } catch { }
                 try { oldBackend?.Close(); } catch { }
@@ -378,34 +392,51 @@ namespace Univers.MultiWorld
                 // 4. Replay handshake & live inventory ke Backend B
                 await ReplayClientHandshakeToBackendAsync(session, newStream, newBackendSlot);
 
-                // 5. Terima WorldInfo (7) -> langsung kirim RequestTileData (8) -> teruskan Chunk & Spawn (49)
+                // 5. Terima WorldInfo (7) -> kirim RequestTileData (8) -> teruskan Chunk & CompleteConnection (49)
                 bool sentTileRequest = false;
                 bool completedSpawn = false;
-                DateTime deadline = DateTime.UtcNow.AddSeconds(20);
+                using var step5Cts = CancellationTokenSource.CreateLinkedTokenSource(session.Cts.Token);
+                step5Cts.CancelAfter(TimeSpan.FromSeconds(25));
 
-                while (DateTime.UtcNow < deadline && !session.IsClosed)
+                while (!step5Cts.IsCancellationRequested && !session.IsClosed)
                 {
-                    byte[]? srvPkt = await ReadPacketAsync(newStream, session.Cts.Token);
+                    byte[]? srvPkt = await ReadPacketAsync(newStream, step5Cts.Token);
                     if (srvPkt == null)
                     {
-                        return (false, $"Koneksi ke '{targetWorldId}' terputus saat memuat peta.");
+                        string msg = $"Koneksi ke '{targetWorldId}' terputus saat memuat peta.";
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                        await SendClientDisconnectAndDisposeAsync(session, msg);
+                        return (false, msg);
                     }
 
                     byte srvId = srvPkt[2];
                     if (srvId == 2)
                     {
                         string reason = TryReadPacketString(srvPkt, 3);
-                        return (false, $"World '{targetWorldId}' memutus koneksi: {reason}");
+                        string msg = $"World '{targetWorldId}' memutus koneksi: {reason}";
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                        await SendClientDisconnectAndDisposeAsync(session, msg);
+                        return (false, msg);
                     }
 
                     TrackBackendEntityPacket(session, srvPkt);
 
-                    if (srvId == 49) // CompleteConnection -> aktifkan forwarding sebelum Client mengirim Spawn (12)
+                    if (srvId == 49) // CompleteConnection
                     {
                         session.CurrentWorldId = targetWorldId;
                         session.IsSwitching = false;
-                        byte[] mappedSpawn = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
-                        await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedSpawn, session.Cts.Token);
+                        byte[] mappedComplete = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
+                        await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedComplete, session.Cts.Token);
+
+                        // Client yang sudah in-game (State=10) mengabaikan Packet 49, jadi Proxy kirim ulang Packet 12 (PlayerSpawn) ke Backend B
+                        byte[]? cachedSpawn;
+                        lock (session.CacheLock) cachedSpawn = session.PlayerSpawnPacket;
+                        if (cachedSpawn != null)
+                        {
+                            byte[] mappedSpawn12 = PrepareOutboundPacket(cachedSpawn, session.ClientSlot, newBackendSlot);
+                            await SendPacketAsync(newStream, session.BackendWriteLock, mappedSpawn12, session.Cts.Token);
+                        }
+
                         completedSpawn = true;
                         break;
                     }
@@ -417,23 +448,32 @@ namespace Univers.MultiWorld
                     {
                         sentTileRequest = true;
                         byte[] reqTiles = BuildRequestEssentialTilesPacket(-1, -1);
-                        await SendRawAsync(newStream, reqTiles, session.Cts.Token);
+                        await SendPacketAsync(newStream, session.BackendWriteLock, reqTiles, session.Cts.Token);
                     }
                 }
 
                 if (!completedSpawn)
                 {
-                    return (false, $"Timeout memuat data world '{targetWorldId}'.");
+                    string msg = $"Timeout memuat data world '{targetWorldId}'.";
+                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
+                    await SendClientDisconnectAndDisposeAsync(session, msg);
+                    return (false, msg);
                 }
 
                 // Jalankan pump loop baru untuk Backend B
                 _ = PumpBackendToClientAsync(session, newBackend, newStream);
+                TShock.Log.ConsoleInfo($"[Univers.MultiWorld] '{playerName}' berhasil pindah ke '{targetWorldId}' (Port {targetPort}).");
                 return (true, $"Berhasil berpindah ke world '{targetWorldId}'.");
             }
             catch (Exception ex)
             {
                 try { newBackend?.Close(); } catch { }
                 session.IsSwitching = false;
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' error: {ex.Message}");
+                if (oldBackendClosed)
+                {
+                    await SendClientDisconnectAndDisposeAsync(session, $"Gagal pindah ke '{targetWorldId}': {ex.Message}");
+                }
                 return (false, $"Gagal switch world: {ex.Message}");
             }
             finally
@@ -498,14 +538,14 @@ namespace Univers.MultiWorld
                     .ToList();
             }
 
-            if (uuidPkt != null)
-            {
-                await newStream.WriteAsync(uuidPkt, session.Cts.Token);
-            }
-
             if (infoPkt != null)
             {
                 await newStream.WriteAsync(PrepareOutboundPacket(infoPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+            }
+
+            if (uuidPkt != null)
+            {
+                await newStream.WriteAsync(uuidPkt, session.Cts.Token);
             }
 
             if (hpPkt != null)
@@ -573,6 +613,9 @@ namespace Univers.MultiWorld
                             short slot = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(4, 2));
                             session.PlayerSlotPackets[slot] = (byte[])packet.Clone();
                         }
+                        break;
+                    case 12:
+                        session.PlayerSpawnPacket = (byte[])packet.Clone();
                         break;
                 }
             }
@@ -739,15 +782,19 @@ namespace Univers.MultiWorld
             return true;
         }
 
-        private static async Task SendPacketAsync(NetworkStream stream, SemaphoreSlim writeLock, byte[] packet, CancellationToken ct)
+        private static async Task<bool> SendPacketAsync(NetworkStream stream, SemaphoreSlim writeLock, byte[] packet, CancellationToken ct)
         {
             await writeLock.WaitAsync(ct);
             try
             {
                 await stream.WriteAsync(packet, ct);
                 await stream.FlushAsync(ct);
+                return true;
             }
-            catch { }
+            catch
+            {
+                return false;
+            }
             finally
             {
                 writeLock.Release();
@@ -758,6 +805,28 @@ namespace Univers.MultiWorld
         {
             await stream.WriteAsync(packet, ct);
             await stream.FlushAsync(ct);
+        }
+
+        private static async Task SendClientDisconnectAndDisposeAsync(ProxySession session, string reason)
+        {
+            try
+            {
+                using var ms = new MemoryStream();
+                using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+                bw.Write((ushort)0);
+                bw.Write((byte)2); // Disconnect
+                bw.Write(reason ?? "Koneksi multiworld terputus.");
+                bw.Flush();
+
+                byte[] pkt = ms.ToArray();
+                BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(0, 2), (ushort)pkt.Length);
+                await SendPacketAsync(session.ClientStream, session.ClientWriteLock, pkt, CancellationToken.None);
+            }
+            catch { }
+            finally
+            {
+                session.Dispose();
+            }
         }
 
         public void Dispose()
