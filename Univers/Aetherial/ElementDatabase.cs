@@ -14,7 +14,7 @@ namespace Univers.Aetherial
         [BsonId]
         public string AccountName { get; set; } = string.Empty;
         public string AssignedElement { get; set; } = string.Empty;
-        // "IGNIS", "GLACIAL", "TORRENT", "VOLT", "BRAMBLE", "OMNIA"
+        // "IGNIS", "GLACIAL", "TORRENT", "VOLT", "BRAMBLE", "RADIANCE", "OMNIA"
         public int ElementLevel { get; set; } = 1; // Tingkatan level elemen (1 - 1000 sinkron Level Karakter Utama)
         public long ElementExp { get; set; } = 0;
         public DateTime AwakenedAt { get; set; } = DateTime.MinValue;
@@ -28,7 +28,7 @@ namespace Univers.Aetherial
 
         public ElementDatabase(string dbPath)
         {
-            _db = new LiteDatabase(dbPath);
+            _db = new LiteDatabase($"Filename={dbPath};Connection=shared");
             _profiles = _db.GetCollection<ElementUserProfile>("players_elements");
             _profiles.EnsureIndex(x => x.AccountName);
         }

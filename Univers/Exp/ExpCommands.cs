@@ -112,7 +112,7 @@ namespace Univers.Exp
                         return;
                     }
                     var data = ExpModule.Database.GetOrCreate(tPlayer.Account.Name);
-                    ExpModule.AddExp(tPlayer, data, addExp, true);
+                    ExpModule.AddExp(tPlayer, data, addExp, true, false);
                     args.Player.SendSuccessMessage($"[ OK ] [Univers.Exp] Berhasil menambahkan {addExp:N0} EXP ke {tPlayer.Name}!");
                     break;
 

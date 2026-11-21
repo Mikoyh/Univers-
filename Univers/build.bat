@@ -86,14 +86,14 @@ set "WORLD_FILE="
 if exist "tshock_world.txt" set /p WORLD_FILE=<tshock_world.txt
 if defined WORLD_FILE set "WORLD_FILE=%WORLD_FILE:"=%"
 if defined WORLD_FILE if exist "%WORLD_FILE%" (
-    echo [4/4] Menjalankan TShock auto-start dengan world dari tshock_world.txt...
-    start "TShock Server - Univers Debug" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -world "%WORLD_FILE%" -port 7777 -players 8 -noupnp
+    echo [4/4] Menjalankan Master Hub (Port 7778) + Gateway Proxy (Port 7777)...
+    start "TShock Hub (7778) - Univers MultiWorld" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -world "%WORLD_FILE%" -port 7778 -players 8 -noupnp
     goto :done
 )
 
 if exist "%TSHOCK_ROOT%\serverconfig.txt" (
-    echo [4/4] Menjalankan TShock auto-start menggunakan serverconfig.txt...
-    start "TShock Server - Univers Debug" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -config "%TSHOCK_ROOT%\serverconfig.txt"
+    echo [4/4] Menjalankan Master Hub (Port 7778) + Gateway Proxy (Port 7777) via serverconfig.txt...
+    start "TShock Hub (7778) - Univers MultiWorld" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -config "%TSHOCK_ROOT%\serverconfig.txt" -port 7778
     goto :done
 )
 
@@ -110,13 +110,13 @@ if not defined AUTO_WORLD if exist "%USERPROFILE%\Documents\My Games\Terraria\Wo
 )
 
 if defined AUTO_WORLD (
-    echo [4/4] Menjalankan TShock auto-start dengan World #1: "%AUTO_WORLD%"...
-    start "TShock Server - Univers Debug" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -world "%AUTO_WORLD%" -port 7777 -players 8 -noupnp
+    echo [4/4] Menjalankan Master Hub (Port 7778) + Gateway Proxy (Port 7777) dengan World #1: "%AUTO_WORLD%"...
+    start "TShock Hub (7778) - Univers MultiWorld" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -world "%AUTO_WORLD%" -port 7778 -players 8 -noupnp
     goto :done
 )
 
-echo [4/4] Membuka server TShock...
-start "TShock Server - Univers Debug" /D "%TSHOCK_ROOT%" "%SERVER_EXE%"
+echo [4/4] Membuka Master Hub TShock (Port 7778) + Gateway Proxy (Port 7777)...
+start "TShock Hub (7778) - Univers MultiWorld" /D "%TSHOCK_ROOT%" "%SERVER_EXE%" -port 7778 -noupnp
 goto :done
 
 :no_deploy

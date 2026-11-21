@@ -198,6 +198,8 @@ namespace Univers.Aetherial.Elements
             int idx = Projectile.NewProjectile(Projectile.GetNoneSource(), pos, vel, projId, 0, 0f, Main.myPlayer);
             if (idx >= 0 && idx < Main.maxProjectiles)
             {
+                Main.projectile[idx].friendly = true;
+                Main.projectile[idx].hostile = false;
                 Main.projectile[idx].direction = vel.X >= 0 ? 1 : -1;
                 Main.projectile[idx].spriteDirection = Main.projectile[idx].direction;
                 Main.projectile[idx].timeLeft = timeLeft;

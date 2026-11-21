@@ -3,12 +3,12 @@
  *  AETHERIAL RESONANCE SYSTEM (MODULAR COMPONENT)
  *  Platform : TShock 6.x / Terraria 1.4.5 / .NET 9.0 (C# 13)
  *  Features : 
- *    1. 5 Core Elements: IGNIS, GLACIAL, TORRENT, VOLT, BRAMBLE (+ RADIANCE)
- *    2. Secret Easter Egg Element: OMNIA (0.000001% Chance, 5x Multiversal DMG)
+ *    1. 6 Core Elements: IGNIS, GLACIAL, TORRENT, VOLT, BRAMBLE, RADIANCE
+ *    2. Secret Easter Egg Element: OMNIA (0.000001% Chance, Multiversal Shatter)
  *    3. Server-Side Packet Interception (100% Vanilla Client Compatible)
- *    4. 8-Second Lockout Rule (15% Proc, 5s Tag Duration + 3s Personal CD)
- *    5. Elemental Reaction Matrix (Thermal Shock, Scalding, Permafrost, etc.)
- *    6. Solo Player Balance (+5% Synergy, +10% Marked Target = +15% Max)
+ *    4. 8-Second Lockout Rule (Proc, Tag Duration + Personal Cooldown)
+ *    5. 15 Elemental Reactions Matrix + Rank Mastery Tracker
+ *    6. Solo Player Balance (Weapon Synergy + Marked Target Bonus)
  *    7. Tutorial Warp Awakening Randomizer & Univers EXP Integration
  * =====================================================================
  */
@@ -25,6 +25,7 @@ using TerrariaApi.Server;
 using TShockAPI;
 using Univers;
 using Univers.Exp;
+using Skynomi.Ranks;
 
 namespace Univers.Aetherial
 {
@@ -49,7 +50,13 @@ namespace Univers.Aetherial
 
         public static readonly Dictionary<string, IElementProfile> ElementRegistry = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["IGNIS"] = new Elements.IgnisElement()
+            ["IGNIS"] = new Elements.IgnisElement(),
+            ["GLACIAL"] = new Elements.GlacialElement(),
+            ["TORRENT"] = new Elements.TorrentElement(),
+            ["VOLT"] = new Elements.VoltElement(),
+            ["BRAMBLE"] = new Elements.BrambleElement(),
+            ["RADIANCE"] = new Elements.RadianceElement(),
+            ["OMNIA"] = new Elements.OmniaElement()
         };
 
         public static IElementProfile? GetElementProfile(string elementId)
@@ -124,9 +131,14 @@ namespace Univers.Aetherial
 
         private static void OnServerLeave(LeaveEventArgs args)
         {
-            ClearPlayerFloatingGem(args.Who);
-            OmniaGemExpirations.TryRemove(args.Who, out _);
-            ElementSkillCooldowns.TryRemove(args.Who, out _);
+            ClearPlayerVisualState(args.Who);
+        }
+
+        internal static void ClearPlayerVisualState(int playerIndex)
+        {
+            ClearPlayerFloatingGem(playerIndex);
+            OmniaGemExpirations.TryRemove(playerIndex, out _);
+            ElementSkillCooldowns.TryRemove(playerIndex, out _);
         }
 
         private static int _tickCounter = 0;
@@ -271,9 +283,13 @@ namespace Univers.Aetherial
                 {
                     OmniaGemExpirations[attacker.Index] = now.AddSeconds(4);
                     SetPlayerFloatingGem(attacker, playerElement);
-                    ApplyMobVisualDebuff(targetNpc, playerElement, 8);
+                    ApplyMobVisualDebuff(targetNpc, playerElement, 8, 7);
                     ShowTagAppliedVisual(attacker, targetNpc, playerElement);
-                    TriggerElementalTagVisualProjectile(targetNpc, playerElement, 7, attacker.TPlayer.Center);
+                    var omniaMod = GetElementProfile(playerElement);
+                    if (omniaMod != null)
+                        omniaMod.OnTagVisual(attacker, targetNpc, 7);
+                    else
+                        TriggerElementalTagVisualProjectile(targetNpc, playerElement, 7, attacker.TPlayer.Center);
 
                     ExecuteElementalReaction(attacker, targetNpc, "NONE", playerElement, ref args);
                     return;
@@ -294,8 +310,19 @@ namespace Univers.Aetherial
                         SetPlayerFloatingGem(attacker, playerElement);
                     }
 
-                    ApplyMobVisualDebuff(targetNpc, playerElement, tierStats.TagDurationSeconds);
+                    ApplyMobVisualDebuff(targetNpc, playerElement, tierStats.TagDurationSeconds, tierStats.TierNumber);
                     ShowTagAppliedVisual(attacker, targetNpc, playerElement);
+
+                    try
+                    {
+                        if (RankModule.Database != null)
+                        {
+                            var rData = RankModule.Database.GetOrCreate(attacker.Account.Name);
+                            rData.ElementTagsCount++;
+                            RankModule.Database.Update(rData);
+                        }
+                    }
+                    catch { }
 
                     var mod = GetElementProfile(playerElement);
                     if (mod != null)
@@ -472,6 +499,24 @@ namespace Univers.Aetherial
             args.Damage = (int)(args.Damage * multiplier);
 
             try { ExpApi.AddExp(attacker, 35); } catch { }
+
+            try
+            {
+                var reactionProfile = Database.GetOrCreateProfile(attacker.Account.Name);
+                if (reactionProfile != null)
+                {
+                    reactionProfile.TotalReactionsTriggered++;
+                    Database.SaveProfile(reactionProfile);
+                }
+
+                if (RankModule.Database != null)
+                {
+                    var rData = RankModule.Database.GetOrCreate(attacker.Account.Name);
+                    rData.ElementCombosCount++;
+                    RankModule.Database.Update(rData);
+                }
+            }
+            catch { }
 
             attacker.SendData(
                 PacketTypes.CreateCombatTextExtended,
@@ -699,21 +744,24 @@ namespace Univers.Aetherial
             }
         }
 
-        private static void ApplyMobVisualDebuff(NPC target, string element, int durationSeconds)
+        private static void ApplyMobVisualDebuff(NPC target, string element, int durationSeconds, int tierNumber = 1)
         {
             if (target == null || !target.active) return;
 
-            int buffId = element.Trim().ToUpperInvariant() switch
-            {
-                "IGNIS" => BuffID.OnFire,
-                "GLACIAL" => BuffID.Frostburn,
-                "TORRENT" => BuffID.Wet,
-                "VOLT" => BuffID.Electrified,
-                "BRAMBLE" => BuffID.Poisoned,
-                "RADIANCE" => BuffID.Ichor,
-                "OMNIA" => BuffID.ShadowFlame,
-                _ => 0
-            };
+            var mod = GetElementProfile(element);
+            int buffId = mod != null
+                ? mod.GetMobDebuffId(tierNumber)
+                : element.Trim().ToUpperInvariant() switch
+                {
+                    "IGNIS" => BuffID.OnFire,
+                    "GLACIAL" => BuffID.Frostburn,
+                    "TORRENT" => BuffID.Wet,
+                    "VOLT" => BuffID.Electrified,
+                    "BRAMBLE" => BuffID.Poisoned,
+                    "RADIANCE" => BuffID.Ichor,
+                    "OMNIA" => BuffID.ShadowFlame,
+                    _ => 0
+                };
 
             if (buffId > 0)
             {
@@ -726,26 +774,45 @@ namespace Univers.Aetherial
         {
             if (target == null || !target.active) return;
 
-            int buffId = element.Trim().ToUpperInvariant() switch
+            var mod = GetElementProfile(element);
+            var candidates = new HashSet<int>();
+            if (mod != null)
             {
-                "IGNIS" => BuffID.OnFire,
-                "GLACIAL" => BuffID.Frostburn,
-                "TORRENT" => BuffID.Wet,
-                "VOLT" => BuffID.Electrified,
-                "BRAMBLE" => BuffID.Poisoned,
-                "RADIANCE" => BuffID.Ichor,
-                "OMNIA" => BuffID.ShadowFlame,
-                _ => 0
-            };
+                candidates.Add(mod.GetMobDebuffId(1));
+                candidates.Add(mod.GetMobDebuffId(4));
+                candidates.Add(mod.GetMobDebuffId(7));
+            }
+            else
+            {
+                int fallback = element.Trim().ToUpperInvariant() switch
+                {
+                    "IGNIS" => BuffID.OnFire,
+                    "GLACIAL" => BuffID.Frostburn,
+                    "TORRENT" => BuffID.Wet,
+                    "VOLT" => BuffID.Electrified,
+                    "BRAMBLE" => BuffID.Poisoned,
+                    "RADIANCE" => BuffID.Ichor,
+                    "OMNIA" => BuffID.ShadowFlame,
+                    _ => 0
+                };
+                if (fallback > 0) candidates.Add(fallback);
+            }
 
-            if (buffId > 0)
+            bool removedAny = false;
+            foreach (int buffId in candidates)
             {
+                if (buffId <= 0) continue;
                 int index = target.FindBuffIndex(buffId);
                 if (index != -1)
                 {
                     target.DelBuff(index);
-                    NetMessage.SendData((int)PacketTypes.NpcUpdateBuff, -1, -1, null, target.whoAmI);
+                    removedAny = true;
                 }
+            }
+
+            if (removedAny)
+            {
+                NetMessage.SendData((int)PacketTypes.NpcUpdateBuff, -1, -1, null, target.whoAmI);
             }
         }
 

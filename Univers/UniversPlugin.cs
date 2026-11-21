@@ -23,6 +23,9 @@ using Univers.Modules;
 using Univers.Exp;
 using Univers.Jobs;
 using Univers.Aetherial;
+using Univers.Shop;
+using Univers.MultiWorld;
+using Univers.Housing;
 using Skynomi.Ranks;
 using Skynomi.Economy;
 
@@ -75,7 +78,16 @@ namespace Univers
                 // [5] Modul Aetherial Resonance (Univers)
                 AetherialModule.Initialize(savePath);
 
-                TShock.Log.ConsoleInfo("[Univers Core] 5 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
+                // [6] Modul Shop & Offline Auction House (Univers)
+                ShopModule.Initialize(savePath);
+
+                // [7] Modul MultiWorld & Gateway Proxy (Univers)
+                MultiWorldModule.Initialize(savePath);
+
+                // [8] Modul Housing & Kavling RP (Univers)
+                HousingModule.Initialize(savePath);
+
+                TShock.Log.ConsoleInfo("[Univers Core] 8 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
             }
             catch (Exception ex)
             {
@@ -89,6 +101,9 @@ namespace Univers
             {
                 GeneralHooks.ReloadEvent -= OnReload;
 
+                try { HousingModule.Dispose(); } catch { }
+                try { MultiWorldModule.Dispose(); } catch { }
+                try { ShopModule.Dispose(); } catch { }
                 try { AetherialModule.Dispose(); } catch { }
                 try { JobModule.Dispose(); } catch { }
                 try { RankModule.Instance?.Dispose(); } catch { }
@@ -105,6 +120,9 @@ namespace Univers
                 EconomyModule.Instance?.Reload(e);
                 RankModule.Instance?.Reload(e);
                 ExpModule.Instance?.Reload(e);
+                ShopModule.Reload();
+                MultiWorldModule.Reload();
+                HousingModule.Reload();
                 TShock.Log.ConsoleInfo("[Univers Core] Konfigurasi seluruh modul berhasil dimuat ulang.");
             }
             catch (Exception ex)

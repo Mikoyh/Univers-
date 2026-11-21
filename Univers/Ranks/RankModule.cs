@@ -91,7 +91,11 @@ namespace Skynomi.Ranks
                     "univers.job.use",
                     "univers.job",
                     "univers.exp.use",
-                    "univers.element.use"
+                    "univers.element.use",
+                    "univers.shop.use",
+                    "univers.ah.use",
+                    "univers.mw.use",
+                    "univers.house.use"
                 };
 
                 List<string> permsToAdd = new List<string>();

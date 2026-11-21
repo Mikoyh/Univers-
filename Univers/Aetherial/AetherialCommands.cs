@@ -11,7 +11,7 @@ namespace Univers.Aetherial
         {
             Commands.ChatCommands.Add(new Command("", HandleElementCommand, "element", "elemen", "aether")
             {
-                HelpText = "Perintah elemen resonansi (/element, /element awaken, /element reactions)"
+                HelpText = "Perintah elemen resonansi (/element, /element list, /element reactions, /element awaken)"
             });
 
             Commands.ChatCommands.Add(new Command("univers.element.awaken", HandleAwakenDirect, "awakenelement", "pilihelemen")
@@ -91,6 +91,12 @@ namespace Univers.Aetherial
                     ShowReactionsMatrix(player);
                     break;
 
+                case "list":
+                case "daftar":
+                case "info":
+                    ShowElementCatalog(player);
+                    break;
+
                 default:
                     if (profile != null) ShowElementStatus(player, profile);
                     break;
@@ -159,6 +165,15 @@ namespace Univers.Aetherial
             profile.AwakenedAt = DateTime.MinValue;
             AetherialModule.Database.SaveProfile(profile);
 
+            var onlinePlayer = TShock.Players.FirstOrDefault(p =>
+                p != null && p.Active && p.IsLoggedIn &&
+                string.Equals(p.Account?.Name, matched.Name, StringComparison.OrdinalIgnoreCase));
+            if (onlinePlayer != null)
+            {
+                AetherialModule.ClearPlayerVisualState(onlinePlayer.Index);
+                onlinePlayer.SendWarningMessage("[ INFO ] Elemen jiwamu telah di-reset oleh Admin. Kamu bisa mengikuti Ritual Awakening kembali.");
+            }
+
             args.Player.SendSuccessMessage($"[ OK ] Berhasil me-reset elemen pemain {matched.Name}! Pemain kini dapat di-awaken kembali.");
         }
 
@@ -169,29 +184,45 @@ namespace Univers.Aetherial
             {
                 player.SendWarningMessage("[ INFO ] Elemen jiwamu belum terbangun!");
                 player.SendInfoMessage("Selesaikan tutorial atau ketik [c/4ade80:/element awaken] untuk memilih elemen jiwamu secara acak!");
+                player.SendInfoMessage("Ketik [c/38bdf8:/element list] untuk melihat daftar 7 elemen yang tersedia.");
                 return;
             }
 
-            string elem = profile.AssignedElement.ToUpper();
+            string elem = profile.AssignedElement.ToUpperInvariant();
+            var elemProf = AetherialModule.GetElementProfile(elem);
+            string elemHex = elemProf?.HexColor ?? "f59e0b";
+
             int lvl = Math.Max(1, profile.ElementLevel);
             var tier = AetherialModule.GetTierStatsForLevel(lvl);
 
-            player.SendSuccessMessage($"Elemen Jiwamu: [c/f59e0b:{elem}]  |  [c/38bdf8:Level: Lv.{lvl}] ([c/{tier.TierColor}:Tier {tier.TierNumber} / 7])");
-            player.SendInfoMessage($"Proc Chance: [c/f59e0b:{tier.TagProcChance}%] | Durasi Tag: [c/f59e0b:{tier.TagDurationSeconds}s] | Visual Stage: [c/{tier.TierColor}:Stage {tier.VisualStage}/5]");
+            player.SendSuccessMessage($"Elemen Jiwamu: [c/{elemHex}:{elem}]  |  [c/38bdf8:Level: Lv.{lvl}] ([c/{tier.TierColor}:Tier {tier.TierNumber} / 7])");
+            player.SendInfoMessage($"Proc Chance: [c/f59e0b:{tier.TagProcChance}%] | Durasi Tag: [c/f59e0b:{tier.TagDurationSeconds}s] | Reaksi Terpicu: [c/a3e635:{profile.TotalReactionsTriggered}x]");
             player.SendInfoMessage($"Benefit Solo: +{tier.WeaponSynergyBonusPercent}% Synergy Senjata, +{tier.SoloMarkedBonusPercent}% Marked DMG (Max +{tier.MaxSoloDamagePercent}%)");
 
             if (tier.HasLargeGemDisplay)
                 player.SendInfoMessage("[c/4ade80:[ + ] Large Gem Aktif: Kristal berputar di atas kepala saat tag aktif!]");
             else
-                player.SendInfoMessage("[c/94a3b8:Large Gem terbuka mulai Tier 4 (Lv. 180+).]");
+                player.SendInfoMessage("[c/94a3b8:Large Gem terbuka mulai Tier 4 (Lv. 180+). Skill 10 detik terbuka mulai Tier 2 (Lv. 25+).]");
 
             if (elem == "OMNIA")
             {
                 player.SendInfoMessage("[c/e879f9:[ + ] ELEMEN EASTER EGG RAHASIA (0.000001% CHANCE)]");
-                player.SendInfoMessage("[c/fdf4ff:Pasif: 5x Multiversal Damage + Universal Resonance dengan seluruh elemen lain!]");
+                player.SendInfoMessage("[c/fdf4ff:Pasif: Multiversal Shatter Instakill + Universal Resonance dengan seluruh elemen lain!]");
             }
 
-            player.SendInfoMessage("Ketik [c/38bdf8:/element reactions] untuk melihat panduan kombo 2 elemen!");
+            player.SendInfoMessage("Ketik [c/38bdf8:/element reactions] (15 Kombo) | [c/38bdf8:/element list] (Daftar 7 Elemen)");
+        }
+
+        private static void ShowElementCatalog(TSPlayer player)
+        {
+            player.SendInfoMessage("=== [c/38bdf8:DAFTAR 7 ELEMEN AETHERIAL] ===");
+            player.SendInfoMessage("[c/f97316:1. IGNIS]    (Common)  - Api Oranye | Debuff: OnFire -> Hellfire -> Daybroken | Aura: Inferno Ring");
+            player.SendInfoMessage("[c/38bdf8:2. GLACIAL]  (Rare)    - Es Kristal  | Debuff: Chilled -> Frostburn -> Frostbite | Aura: Ice Barrier");
+            player.SendInfoMessage("[c/06b6d4:3. TORRENT]  (Common)  - Air Samudra | Debuff: Wet -> Slow -> Betsy's Curse | Aura: WaterWalk/Swift");
+            player.SendInfoMessage("[c/a855f7:4. VOLT]     (Rare)    - Petir Ungu  | Debuff: Confused -> Electrified -> ShadowFlame | Aura: Swiftness");
+            player.SendInfoMessage("[c/10b981:5. BRAMBLE]  (Common)  - Alam Hijau  | Debuff: Poisoned -> CursedInferno -> Venom | Aura: Dryad Leaf Ring");
+            player.SendInfoMessage("[c/facc15:6. RADIANCE] (Epic 5%) - Cahaya Emas | Debuff: Midas -> Ichor -> Daybroken | Aura: Shine + Wrath");
+            player.SendInfoMessage("[c/e879f9:7. OMNIA]    (Secret)  - Singularitas Cosmic (0.000001%) | Multiversal Shatter + Semua Aura");
         }
 
         private static void ShowReactionsMatrix(TSPlayer player)
@@ -219,6 +250,7 @@ namespace Univers.Aetherial
             if (args.Parameters.Count < 2)
             {
                 args.Player.SendInfoMessage("[ FORMAT ] Penggunaan: /setelement <player> <ignis|glacial|torrent|volt|bramble|radiance|omnia>");
+                args.Player.SendInfoMessage("Pilihan valid: [c/f97316:ignis] | [c/38bdf8:glacial] | [c/06b6d4:torrent] | [c/a855f7:volt] | [c/10b981:bramble] | [c/facc15:radiance] | [c/e879f9:omnia]");
                 return;
             }
 
@@ -229,13 +261,31 @@ namespace Univers.Aetherial
                 return;
             }
 
-            string newElem = args.Parameters[1].ToUpperInvariant();
+            string rawElem = args.Parameters[1].Trim().ToUpperInvariant();
+            if (!AetherialModule.ElementRegistry.TryGetValue(rawElem, out var elemProf))
+            {
+                args.Player.SendErrorMessage($"[ ERROR ] Elemen '{args.Parameters[1]}' tidak valid!");
+                args.Player.SendInfoMessage("Opsi elemen: [c/f97316:ignis] | [c/38bdf8:glacial] | [c/06b6d4:torrent] | [c/a855f7:volt] | [c/10b981:bramble] | [c/facc15:radiance] | [c/e879f9:omnia]");
+                return;
+            }
+
+            string newElem = elemProf.ElementId;
             var profile = AetherialModule.Database.GetOrCreateProfile(matched.Name);
             profile.AssignedElement = newElem;
             profile.ElementLevel = ExpApi.GetLevel(matched.Name);
+            if (profile.AwakenedAt == DateTime.MinValue) profile.AwakenedAt = DateTime.UtcNow;
             AetherialModule.Database.SaveProfile(profile);
 
-            args.Player.SendSuccessMessage($"[ OK ] Berhasil mengubah elemen {matched.Name} menjadi {newElem}!");
+            var onlineTarget = TShock.Players.FirstOrDefault(p =>
+                p != null && p.Active && p.IsLoggedIn &&
+                string.Equals(p.Account?.Name, matched.Name, StringComparison.OrdinalIgnoreCase));
+            if (onlineTarget != null)
+            {
+                AetherialModule.ClearPlayerVisualState(onlineTarget.Index);
+                onlineTarget.SendSuccessMessage($"[ AETHERIAL ] Admin mengubah elemen jiwamu menjadi [c/{elemProf.HexColor}:{newElem}] (Lv.{profile.ElementLevel})!");
+            }
+
+            args.Player.SendSuccessMessage($"[ OK ] Berhasil mengubah elemen {matched.Name} menjadi [c/{elemProf.HexColor}:{newElem}]!");
         }
 
         private static void HandleSetElementLevel(CommandArgs args)

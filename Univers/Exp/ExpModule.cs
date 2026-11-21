@@ -78,12 +78,26 @@ namespace Univers.Exp
             var player = TShock.Players[lastHitPlayerIndex];
             if (player == null || !player.Active || !player.IsLoggedIn) return;
 
-            double calculatedExp = (double)npc.lifeMax / 1000.0;
-            int finalExpReward = (int)Math.Ceiling(calculatedExp);
+            int finalExpReward;
+            if (npc.boss)
+            {
+                int bossScaled = (int)Math.Ceiling((Math.Sqrt(npc.lifeMax) * 3.0) + (npc.lifeMax / 40.0));
+                finalExpReward = Math.Max((int)Math.Round(Config.BossExpMultiplier * 4.0), bossScaled);
+            }
+            else
+            {
+                int minMob = Math.Min(Config.MobExpMin, Config.MobExpMax);
+                int maxMob = Math.Max(Config.MobExpMin, Config.MobExpMax);
+                int baseMob = Rnd.Next(minMob, maxMob + 1);
+                int hpBonus = (int)Math.Floor((Math.Sqrt(npc.lifeMax) * 0.8) + (npc.lifeMax / 60.0));
+                finalExpReward = Math.Max(1, baseMob + hpBonus);
+            }
 
             if (finalExpReward > 0)
             {
                 var data = Database.GetOrCreate(player.Account.Name);
+                data.MobsKilled++;
+                if (npc.boss) data.BossesKilled++;
                 AddExp(player, data, finalExpReward, true);
             }
         }
@@ -162,17 +176,24 @@ namespace Univers.Exp
                     .Replace("{PlayerName}", player.Name)
                     .Replace("{Message}", rawText);
 
-                foreach (var p in TShock.Players)
+                if (Univers.MultiWorld.MultiWorldModule.IsCrossWorldChatActive)
                 {
-                    if (p != null && p.Active)
-                        p.SendMessage(formatted, Color.White);
+                    Univers.MultiWorld.MultiWorldModule.HandleLocalFormattedChat(player, formatted);
+                }
+                else
+                {
+                    foreach (var p in TShock.Players)
+                    {
+                        if (p != null && p.Active)
+                            p.SendMessage(formatted, Color.White);
+                    }
                 }
             }
         }
 
-        public static void AddExp(TSPlayer player, PlayerExpData data, int amount, bool notifyCombatText)
+        public static void AddExp(TSPlayer player, PlayerExpData data, int amount, bool notifyCombatText, bool applyRankMultiplier = true)
         {
-            if (player == null || !player.Active || !player.IsLoggedIn) return;
+            if (player == null || !player.Active || !player.IsLoggedIn || amount <= 0) return;
 
             if (data.Level >= 1000)
             {
@@ -183,6 +204,7 @@ namespace Univers.Exp
             }
 
             int maxLevelCap = 30;
+            double rankExpMultiplier = 1.0;
             try
             {
                 var rankData = RankModule.Database.GetOrCreate(player.Account.Name);
@@ -192,25 +214,34 @@ namespace Univers.Exp
                     if (rankInfo != null)
                     {
                         maxLevelCap = rankInfo.MaxLevelCap;
+                        if (rankInfo.ExpMultiplier > 1.0)
+                        {
+                            rankExpMultiplier = rankInfo.ExpMultiplier;
+                        }
                     }
                 }
             }
             catch
             {
                 maxLevelCap = 30;
+                rankExpMultiplier = 1.0;
             }
+
+            int effectiveAmount = applyRankMultiplier
+                ? Math.Max(1, (int)Math.Round(amount * rankExpMultiplier))
+                : amount;
 
             if (data.Level >= maxLevelCap)
             {
                 long requiredExp = Config.CalculateRequiredExp(data.Level);
-                data.CurrentExp = Math.Min(requiredExp - 1, data.CurrentExp + amount);
-                data.TotalExp += amount;
+                data.CurrentExp = Math.Min(requiredExp - 1, data.CurrentExp + effectiveAmount);
+                data.TotalExp += effectiveAmount;
                 Database.Save(data);
                 return;
             }
 
-            data.CurrentExp += amount;
-            data.TotalExp += amount;
+            data.CurrentExp += effectiveAmount;
+            data.TotalExp += effectiveAmount;
 
             bool leveledUp = false;
             int oldLevel = data.Level;
@@ -250,9 +281,7 @@ namespace Univers.Exp
 
             string color = Config.GetLevelColorForLevel(data.Level);
 
-            player.SendMessage("==================================================", Color.Gold);
-            player.SendMessage($"[c/22d3ee:[ LEVEL UP ]] Selamat {player.Name}! Kamu naik dari Lv.{oldLevel} ke [c/{color}:Lv.{data.Level}]!", Color.Cyan);
-            player.SendMessage("==================================================", Color.Gold);
+            player.SendMessage($"[c/22d3ee:[ LEVEL UP ]] Lv.{oldLevel} -> [c/{color}:Lv.{data.Level}]", Color.Cyan);
 
             player.SendData(
                 PacketTypes.CreateCombatTextExtended,
@@ -276,22 +305,10 @@ namespace Univers.Exp
         {
             if (player == null || !player.Active || player.TPlayer == null) return;
 
+            // Efek sederhana: 2 semburan confetti ringan di atas kepala (tanpa roket ledakan)
             Vector2 origin = player.TPlayer.Top;
-
-            // 2 roket kembang api ringan ke atas (0 damage, murni visual)
-            int[] rockets = { ProjectileID.RocketFireworksBoxYellow, ProjectileID.RocketFireworksBoxBlue };
-            float[] rocketVx = { -1.6f, 1.6f };
-            for (int i = 0; i < rockets.Length; i++)
-            {
-                SpawnCelebrationProjectile(origin, new Vector2(rocketVx[i], -8.5f), rockets[i]);
-            }
-
-            // 4 semburan confetti meriah ke kiri & kanan
-            float[] confettiVx = { -4.5f, -2.0f, 2.0f, 4.5f };
-            for (int i = 0; i < confettiVx.Length; i++)
-            {
-                SpawnCelebrationProjectile(player.TPlayer.Center, new Vector2(confettiVx[i], -5.0f), ProjectileID.ConfettiGun);
-            }
+            SpawnCelebrationProjectile(origin, new Vector2(-1.8f, -4.5f), ProjectileID.ConfettiGun);
+            SpawnCelebrationProjectile(origin, new Vector2(1.8f, -4.5f), ProjectileID.ConfettiGun);
         }
 
         private static void SpawnCelebrationProjectile(Vector2 pos, Vector2 vel, int projId, int? timeLeftOverride = null)

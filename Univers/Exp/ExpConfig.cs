@@ -10,19 +10,19 @@ namespace Univers.Exp
     public class ExpConfig
     {
         [JsonProperty("Base Exp For Level 1")]
-        public int BaseExp { get; set; } = 35;
+        public int BaseExp { get; set; } = 20;
 
         [JsonProperty("Linear Step Addition")]
-        public double LinearStep { get; set; } = 25.0;
+        public double LinearStep { get; set; } = 3.5;
 
         [JsonProperty("Growth Scale Factor")]
-        public double GrowthScale { get; set; } = 15.5;
+        public double GrowthScale { get; set; } = 0.14;
 
         [JsonProperty("Growth Exponent (Curvature)")]
-        public double GrowthExponent { get; set; } = 2.0;
+        public double GrowthExponent { get; set; } = 1.75;
 
         [JsonProperty("Chat Exp Min")]
-        public int ChatExpMin { get; set; } = 2;
+        public int ChatExpMin { get; set; } = 3;
 
         [JsonProperty("Chat Exp Max")]
         public int ChatExpMax { get; set; } = 8;
@@ -31,10 +31,10 @@ namespace Univers.Exp
         public int ChatCooldownSeconds { get; set; } = 15;
 
         [JsonProperty("Mob Exp Min")]
-        public int MobExpMin { get; set; } = 12;
+        public int MobExpMin { get; set; } = 8;
 
         [JsonProperty("Mob Exp Max")]
-        public int MobExpMax { get; set; } = 25;
+        public int MobExpMax { get; set; } = 14;
 
         [JsonProperty("Boss Exp Multiplier")]
         public double BossExpMultiplier { get; set; } = 35;
@@ -64,32 +64,26 @@ namespace Univers.Exp
 
         public long CalculateRequiredExp(int level)
         {
-            if (level <= 1) return BaseExp;
+            if (level <= 1) return Math.Max(1, BaseExp);
 
             int diff = level - 1;
+            double value = BaseExp + (LinearStep * diff) + (GrowthScale * Math.Pow(diff, GrowthExponent));
 
-            // FASE 1: Level di bawah 500
-            if (level < 500)
+            // FASE MID-LATE (Lv 500+): Tambahan kurva bertahap selaras Rank Stellar-Astral
+            if (level >= 500)
             {
-                double earlyScale = GrowthScale * 1.8;
-                return (long)(BaseExp + (LinearStep * diff) + (earlyScale * Math.Pow(diff, 2.1)));
-            }
-
-            // FASE 2: Level 500 sampai 799
-            if (level >= 500 && level < 800)
-            {
-                long expAt500 = (long)(BaseExp + (LinearStep * 499) + ((GrowthScale * 1.8) * Math.Pow(499, 2.1)));
                 int diff500 = level - 499;
-
-                return expAt500 + (long)(75000 * diff500 + (GrowthScale * Math.Pow(diff500, 1.2)));
+                value += (180.0 * diff500) + (4.5 * Math.Pow(diff500, 1.45));
             }
 
-            // FASE 3: Level 800 ke atas
-            long expAt800 = (long)(BaseExp + (LinearStep * 499) + ((GrowthScale * 1.8) * Math.Pow(499, 2.1)));
-            long cumulativeAt800 = expAt800 + (long)(75000 * 300 + (GrowthScale * Math.Pow(300, 1.2)));
-            int diff800 = level - 799;
+            // FASE ENDGAME (Lv 800-1000): Tambahan kurva bertahap selaras Rank Cosmic-Univers
+            if (level >= 800)
+            {
+                int diff800 = level - 799;
+                value += (900.0 * diff800) + (18.0 * Math.Pow(diff800, 1.5));
+            }
 
-            return cumulativeAt800 + (long)(260000 * diff800 + (GrowthScale * 5.0 * Math.Pow(diff800, 1.5)));
+            return Math.Max(1L, (long)Math.Floor(value));
         }
 
         public int GetBadgeIdForLevel(int level)
@@ -127,12 +121,37 @@ namespace Univers.Exp
                     return def;
                 }
                 var loaded = JsonConvert.DeserializeObject<ExpConfig>(File.ReadAllText(path)) ?? new ExpConfig();
+                bool changed = false;
+
                 if (string.IsNullOrWhiteSpace(loaded.ChatFormat) ||
                     loaded.ChatFormat.Contains("[c/{LevelColor}:{Prefix}]", StringComparison.OrdinalIgnoreCase) ||
                     loaded.ChatFormat.Contains("[c/{LevelColor}:[{Level}][c/{LevelColor}:]]", StringComparison.OrdinalIgnoreCase) ||
                     loaded.ChatFormat.Contains("Lv.{Level}", StringComparison.OrdinalIgnoreCase))
                 {
                     loaded.ChatFormat = new ExpConfig().ChatFormat;
+                    changed = true;
+                }
+
+                // Migrasi kurva EXP lama yang terlalu berat (Lv.30 = ~302k EXP) ke kurva baru (~2.5k EXP)
+                if (loaded.BaseExp == 35 &&
+                    Math.Abs(loaded.LinearStep - 25.0) < 0.01 &&
+                    Math.Abs(loaded.GrowthScale - 15.5) < 0.01 &&
+                    Math.Abs(loaded.GrowthExponent - 2.0) < 0.01)
+                {
+                    var def = new ExpConfig();
+                    loaded.BaseExp = def.BaseExp;
+                    loaded.LinearStep = def.LinearStep;
+                    loaded.GrowthScale = def.GrowthScale;
+                    loaded.GrowthExponent = def.GrowthExponent;
+                    loaded.ChatExpMin = def.ChatExpMin;
+                    loaded.ChatExpMax = def.ChatExpMax;
+                    loaded.MobExpMin = def.MobExpMin;
+                    loaded.MobExpMax = def.MobExpMax;
+                    changed = true;
+                }
+
+                if (changed)
+                {
                     File.WriteAllText(path, JsonConvert.SerializeObject(loaded, Formatting.Indented));
                 }
                 return loaded;

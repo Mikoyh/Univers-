@@ -185,7 +185,7 @@ namespace Univers.Jobs
 
         public JobDatabase(string dbPath)
         {
-            _db = new LiteDatabase(dbPath);
+            _db = new LiteDatabase($"Filename={dbPath};Connection=shared");
             _profiles = _db.GetCollection<JobUserProfile>("players_jobs");
             _profiles.EnsureIndex(x => x.AccountName);
         }
