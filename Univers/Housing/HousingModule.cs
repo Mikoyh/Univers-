@@ -299,11 +299,10 @@ namespace Univers.Housing
         {
             if (e.Handled || !IsHousingActiveInCurrentWorld()) return;
 
-            int msgId = (int)e.MsgID;
             var player = TShock.Players[e.Msg.whoAmI];
             if (player == null || !player.Active) return;
 
-            if (msgId == MessageID.SignRead)
+            if (e.MsgID == PacketTypes.SignRead)
             {
                 if (e.Length < 4) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
@@ -358,7 +357,7 @@ namespace Univers.Housing
                 return;
             }
 
-            if (msgId == MessageID.SignNew)
+            if (e.MsgID == PacketTypes.SignNew)
             {
                 if (e.Length < 6) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
@@ -390,7 +389,7 @@ namespace Univers.Housing
                 return;
             }
 
-            if (msgId == MessageID.LiquidSet || msgId == MessageID.PlaceObject || msgId == MessageID.PlaceTileEntity)
+            if (e.MsgID == PacketTypes.LiquidSet || e.MsgID == PacketTypes.PlaceObject || e.MsgID == PacketTypes.PlaceTileEntity)
             {
                 if (e.Length < 4 || player.HasPermission("univers.house.admin")) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
@@ -411,7 +410,7 @@ namespace Univers.Housing
                 return;
             }
 
-            if (msgId == MessageID.ChestUnlock)
+            if (e.MsgID == PacketTypes.ChestUnlock)
             {
                 if (e.Length < 5 || player.HasPermission("univers.house.admin")) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
@@ -432,11 +431,11 @@ namespace Univers.Housing
                 return;
             }
 
-            if (msgId == MessageID.ToggleDoorState || msgId == MessageID.HitSwitch)
+            if (e.MsgID == PacketTypes.ToggleDoorState || e.MsgID == PacketTypes.HitSwitch)
             {
                 if (e.Length < 4 || player.HasPermission("univers.house.admin")) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
-                if (msgId == MessageID.ToggleDoorState) reader.ReadByte();
+                if (e.MsgID == PacketTypes.ToggleDoorState) reader.ReadByte();
                 short tx = reader.ReadInt16();
                 short ty = reader.ReadInt16();
 

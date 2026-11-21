@@ -551,7 +551,6 @@ namespace Univers.MultiWorld
                     account = new UserAccount
                     {
                         Name = accName,
-                        Password = string.Empty,
                         UUID = !string.IsNullOrWhiteSpace(ticket.ClientUuid) ? ticket.ClientUuid : player.UUID,
                         Group = grpName,
                         Registered = DateTime.UtcNow.ToString("s"),
@@ -584,6 +583,9 @@ namespace Univers.MultiWorld
         {
             try
             {
+                MethodInfo? hashMethod = typeof(UserAccount).GetMethod("CreateBCryptHash", new[] { typeof(string) });
+                hashMethod?.Invoke(account, new object[] { Guid.NewGuid().ToString("N") });
+
                 var mgr = TShock.UserAccounts;
                 MethodInfo? addMethod = mgr.GetType().GetMethod("AddUserAccount", new[] { typeof(UserAccount) })
                     ?? mgr.GetType().GetMethod("InsertNewAccount", new[] { typeof(UserAccount) });

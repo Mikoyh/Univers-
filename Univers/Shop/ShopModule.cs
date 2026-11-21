@@ -237,7 +237,7 @@ namespace Univers.Shop
 
             string text = args.Text?.Trim() ?? string.Empty;
             if (text.StartsWith(TShock.Config.Settings.CommandSpecifier) ||
-                text.StartsWith(TShock.Config.Settings.SilentCommandSpecifier))
+                text.StartsWith(TShock.Config.Settings.CommandSilentSpecifier))
             {
                 return;
             }
@@ -327,10 +327,9 @@ namespace Univers.Shop
 
         private static void OnNetGetData(GetDataEventArgs e)
         {
-            int msgId = (int)e.MsgID;
-            if (msgId != MessageID.SignRead &&
-                msgId != MessageID.SignNew &&
-                msgId != MessageID.PlaceItemFrame)
+            if (e.MsgID != PacketTypes.SignRead &&
+                e.MsgID != PacketTypes.SignNew &&
+                e.MsgID != PacketTypes.PlaceItemFrame)
             {
                 return;
             }
@@ -338,7 +337,7 @@ namespace Univers.Shop
             var player = TShock.Players[e.Msg.whoAmI];
             if (player == null || !player.Active) return;
 
-            if (msgId == MessageID.PlaceItemFrame)
+            if (e.MsgID == PacketTypes.PlaceItemFrame)
             {
                 if (e.Length < 4) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
@@ -359,7 +358,7 @@ namespace Univers.Shop
                 return;
             }
 
-            if (msgId == MessageID.SignNew)
+            if (e.MsgID == PacketTypes.SignNew)
             {
                 if (e.Length < 6) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
@@ -380,7 +379,7 @@ namespace Univers.Shop
                 return;
             }
 
-            if (msgId == MessageID.SignRead)
+            if (e.MsgID == PacketTypes.SignRead)
             {
                 if (e.Length < 4) return;
                 using var reader = new BinaryReader(new MemoryStream(e.Msg.readBuffer, e.Index, e.Length));
