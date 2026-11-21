@@ -66,13 +66,13 @@ namespace Univers.MultiWorld
             };
         }
 
-        public int GetEvilArg()
+        public string GetEvilArg()
         {
             return Evil.Trim().ToLowerInvariant() switch
             {
-                "corrupt" or "corruption" or "1" => 1,
-                "crimson" or "2" => 2,
-                _ => 0
+                "corrupt" or "corruption" or "1" => "corrupt",
+                "crimson" or "2" => "crimson",
+                _ => "random"
             };
         }
     }

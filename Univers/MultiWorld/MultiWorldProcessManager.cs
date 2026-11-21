@@ -266,13 +266,16 @@ namespace Univers.MultiWorld
 
                 argList.Add($"-port {def.Port}");
                 argList.Add($"-world \"{wldPath}\"");
-                argList.Add($"-autocreate {def.GetSizeArg()}");
-                argList.Add($"-worldname \"{SanitizeArgText(def.DisplayName)}\"");
-                argList.Add($"-difficulty {def.GetDifficultyArg()}");
-                argList.Add($"-worldevil {def.GetEvilArg()}");
-                if (!string.IsNullOrWhiteSpace(def.Seed))
+                if (willGenerate)
                 {
-                    argList.Add($"-seed \"{SanitizeArgText(def.Seed)}\"");
+                    argList.Add($"-autocreate {def.GetSizeArg()}");
+                    argList.Add($"-worldname \"{SanitizeArgText(def.DisplayName)}\"");
+                    argList.Add($"-difficulty {def.GetDifficultyArg()}");
+                    argList.Add($"-worldevil {def.GetEvilArg()}");
+                    if (!string.IsNullOrWhiteSpace(def.Seed))
+                    {
+                        argList.Add($"-seed \"{SanitizeArgText(def.Seed)}\"");
+                    }
                 }
                 argList.Add($"-configpath \"{cfgDir}\"");
                 argList.Add($"-logpath \"{logDir}\"");
