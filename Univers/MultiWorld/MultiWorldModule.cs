@@ -518,10 +518,10 @@ namespace Univers.MultiWorld
             _ = SendCrossWorldRosterGreetingAsync(player);
         }
 
-        private static void SendSpawnSectionsAndTeleport(int who)
-        {
-            var p = TShock.Players[who];
-            if (p == null || !p.Active || !p.RealPlayer) return;
+     private static void SendSpawnSectionsAndTeleport(int who)
+     {
+         var p = TShock.Players[who];
+         if (p == null || !p.Active || !p.RealPlayer) return;
 
          int spawnX = Main.spawnTileX;
          int spawnY = Main.spawnTileY;
@@ -533,43 +533,54 @@ namespace Univers.MultiWorld
 
          float spawnPx = spawnX * 16f;
          float spawnPy = Math.Max(10, spawnY - 3) * 16f;
-         p.Teleport(spawnPx, spawnPy);
 
-            try
-            {
-                int maxSecX = Math.Max(1, Main.maxTilesX / 200);
-                int maxSecY = Math.Max(1, Main.maxTilesY / 150);
-                int centerSx = Math.Clamp(Main.spawnTileX / 200, 0, maxSecX - 1);
-                int centerSy = Math.Clamp(Main.spawnTileY / 150, 0, maxSecY - 1);
-                int minSx = Math.Max(0, centerSx - 4);
-                int maxSx = Math.Min(maxSecX - 1, centerSx + 4);
-                int minSy = Math.Max(0, centerSy - 3);
-                int maxSy = Math.Min(maxSecY - 1, centerSy + 3);
+         void SendSectionsAndTp(TSPlayer targetPlayer)
+         {
+             try
+             {
+                 int maxSecX = Math.Max(1, Main.maxTilesX / 200);
+                 int maxSecY = Math.Max(1, Main.maxTilesY / 150);
+                 int centerSx = Math.Clamp(spawnX / 200, 0, maxSecX - 1);
+                 int centerSy = Math.Clamp(spawnY / 150, 0, maxSecY - 1);
+                 int minSx = Math.Max(0, centerSx - 4);
+                 int maxSx = Math.Min(maxSecX - 1, centerSx + 4);
+                 int minSy = Math.Max(0, centerSy - 3);
+                 int maxSy = Math.Min(maxSecY - 1, centerSy + 3);
 
-                for (int sx = minSx; sx <= maxSx; sx++)
-                {
-                    for (int sy = minSy; sy <= maxSy; sy++)
-                    {
-                        NetMessage.SendSection(who, sx, sy);
-                    }
-                }
-                NetMessage.SendData((int)PacketTypes.TileFrameSection, who, -1, null, minSx, minSy, maxSx, maxSy);
-            }
-            catch { }
+                 for (int sx = minSx; sx <= maxSx; sx++)
+                 {
+                     for (int sy = minSy; sy <= maxSy; sy++)
+                     {
+                         NetMessage.SendSection(targetPlayer.Index, sx, sy);
+                     }
+                 }
+                 NetMessage.SendData((int)PacketTypes.TileFrameSection, targetPlayer.Index, -1, null, minSx, minSy, maxSx, maxSy);
+             }
+             catch { }
 
-            // Safety follow-up untuk memaksa client sinkron tile & spawn
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(350);
-                _mainThreadQueue.Enqueue(() =>
-                {
-                    var cur = TShock.Players[who];
-                    if (cur == null || !cur.Active || !cur.RealPlayer) return;
-                    cur.Teleport(spawnPx, spawnPy);
-                    cur.SendData(PacketTypes.WorldInfo);
-                });
-            });
-        }
+             targetPlayer.Teleport(spawnPx, spawnPy);
+         }
+
+         SendSectionsAndTp(p);
+
+         _ = Task.Run(async () =>
+         {
+             await Task.Delay(200);
+             _mainThreadQueue.Enqueue(() =>
+             {
+                 var cur = TShock.Players[who];
+                 if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
+             });
+
+             await Task.Delay(500);
+             _mainThreadQueue.Enqueue(() =>
+             {
+                 var cur = TShock.Players[who];
+                 if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
+             });
+         });
+     }
+
 
 
         private static async Task SendCrossWorldRosterGreetingAsync(TSPlayer player)
@@ -723,7 +734,10 @@ namespace Univers.MultiWorld
                 string accName = string.IsNullOrWhiteSpace(ticket.AccountName) ? player.Name : ticket.AccountName;
                 string grpName = string.IsNullOrWhiteSpace(ticket.GroupName) ? "default" : ticket.GroupName;
 
-                var group = EnsureSyncedGroup(grpName, ticket.HasWildcardPermission, ticket.GroupPermissions);
+                bool isOwnerOrSuper = ticket.HasWildcardPermission ||
+                                      grpName.Equals("owner", StringComparison.OrdinalIgnoreCase) ||
+                                      grpName.Equals("superadmin", StringComparison.OrdinalIgnoreCase);
+                var group = EnsureSyncedGroup(grpName, isOwnerOrSuper, ticket.GroupPermissions);
                 string resolvedGroupName = group?.Name ?? grpName;
 
                 var account = TShock.UserAccounts.GetUserAccountByName(accName);
@@ -1054,11 +1068,18 @@ namespace Univers.MultiWorld
                      if (Config.CrossWorldChat && !string.IsNullOrWhiteSpace(req.FormattedMessage))
                      {
                          string msg = req.FormattedMessage;
-                         TShock.Log.ConsoleInfo($"[Chat:{req.WorldId}] {StripTerrariaColorTags(msg)}");
+                         string cleanConsole = StripTerrariaColorTags(msg);
+                         string prefixToStrip = $"[{req.WorldId.ToUpperInvariant()}] ";
+                         if (cleanConsole.StartsWith(prefixToStrip, StringComparison.OrdinalIgnoreCase))
+                         {
+                             cleanConsole = cleanConsole.Substring(prefixToStrip.Length);
+                         }
+                         TShock.Log.ConsoleInfo($"[Chat:{req.WorldId}] {cleanConsole}");
                          _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(msg, Color.White));
                          await PushMessageToOtherChildrenAsync(req.WorldId, "push_chat", msg, 255, 255, 255);
                      }
                      return new IpcResponse { Success = true };
+
 
                     case "presence_event":
                         await HandleMasterPresenceEventAsync(req.AdminSubAction, req.PlayerName, req.WorldId);

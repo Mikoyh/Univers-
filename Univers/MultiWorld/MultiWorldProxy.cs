@@ -435,15 +435,6 @@ namespace Univers.MultiWorld
                         byte[] mappedComplete = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
                         await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedComplete, session.Cts.Token);
 
-                        // Client yang sudah in-game (State=10) mengabaikan Packet 49, jadi Proxy kirim ulang Packet 12 (PlayerSpawn) ke Backend B
-                        byte[]? cachedSpawn;
-                        lock (session.CacheLock) cachedSpawn = session.PlayerSpawnPacket;
-                        if (cachedSpawn != null)
-                        {
-                            byte[] mappedSpawn12 = PrepareOutboundPacket(cachedSpawn, session.ClientSlot, newBackendSlot);
-                            await SendPacketAsync(newStream, session.BackendWriteLock, mappedSpawn12, session.Cts.Token);
-                        }
-
                         completedSpawn = true;
                         break;
                     }
