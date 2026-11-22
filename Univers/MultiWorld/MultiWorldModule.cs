@@ -319,12 +319,14 @@ namespace Univers.MultiWorld
 
         public static void HandleLocalFormattedChat(TSPlayer sender, string formattedChat)
         {
-            string badge = FormatWorldChatBadge(CurrentWorldId);
-            string fullMessage = $"{badge} {formattedChat}";
-
-            BroadcastLocalFormatted(fullMessage, Color.White);
+            // Pemain di world yang SAMA melihat chat bersih tanpa prefix [RTP]/[LOBBY]
+            BroadcastLocalFormatted(formattedChat, Color.White);
 
             if (!Config.CrossWorldChat) return;
+
+            // Pemain di world LAIN melihat prefix asal world-nya
+            string badge = FormatWorldChatBadge(CurrentWorldId);
+            string crossWorldMessage = $"{badge} {formattedChat}";
 
             if (IsChildProcess)
             {
@@ -333,14 +335,15 @@ namespace Univers.MultiWorld
                     Action = "relay_chat",
                     WorldId = CurrentWorldId,
                     PlayerName = sender.Name,
-                    FormattedMessage = fullMessage
+                    FormattedMessage = crossWorldMessage
                 });
             }
             else
             {
-                _ = PushMessageToOtherChildrenAsync(CurrentWorldId, "push_chat", fullMessage, 255, 255, 255);
+                _ = PushMessageToOtherChildrenAsync(CurrentWorldId, "push_chat", crossWorldMessage, 255, 255, 255);
             }
         }
+
 
         private static void BroadcastLocalFormatted(string message, Color color)
         {
@@ -485,16 +488,20 @@ namespace Univers.MultiWorld
             var p = TShock.Players[who];
             if (p == null || !p.Active || !p.RealPlayer) return;
 
+            float spawnPx = Main.spawnTileX * 16f;
+            float spawnPy = Math.Max(10, Main.spawnTileY - 3) * 16f;
+            p.Teleport(spawnPx, spawnPy);
+
             try
             {
                 int maxSecX = Math.Max(1, Main.maxTilesX / 200);
                 int maxSecY = Math.Max(1, Main.maxTilesY / 150);
                 int centerSx = Math.Clamp(Main.spawnTileX / 200, 0, maxSecX - 1);
                 int centerSy = Math.Clamp(Main.spawnTileY / 150, 0, maxSecY - 1);
-                int minSx = Math.Max(0, centerSx - 2);
-                int maxSx = Math.Min(maxSecX - 1, centerSx + 2);
-                int minSy = Math.Max(0, centerSy - 1);
-                int maxSy = Math.Min(maxSecY - 1, centerSy + 1);
+                int minSx = Math.Max(0, centerSx - 4);
+                int maxSx = Math.Min(maxSecX - 1, centerSx + 4);
+                int minSy = Math.Max(0, centerSy - 3);
+                int maxSy = Math.Min(maxSecY - 1, centerSy + 3);
 
                 for (int sx = minSx; sx <= maxSx; sx++)
                 {
@@ -507,26 +514,20 @@ namespace Univers.MultiWorld
             }
             catch { }
 
-            float spawnPx = Main.spawnTileX * 16f;
-            float spawnPy = Math.Max(10, Main.spawnTileY - 3) * 16f;
-            p.Teleport(spawnPx, spawnPy);
-
-            // Safety follow-up jika Packet 13 lama sempat balapan dengan Packet 65 saat switch
+            // Safety follow-up untuk memaksa client sinkron tile & spawn
             _ = Task.Run(async () =>
             {
-                await Task.Delay(250);
+                await Task.Delay(350);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
                     if (cur == null || !cur.Active || !cur.RealPlayer) return;
-                    if (Math.Abs(cur.TPlayer.position.X - spawnPx) > 16f * 45f ||
-                        Math.Abs(cur.TPlayer.position.Y - spawnPy) > 16f * 45f)
-                    {
-                        cur.Teleport(spawnPx, spawnPy);
-                    }
+                    cur.Teleport(spawnPx, spawnPy);
+                    cur.SendData(PacketTypes.WorldInfo);
                 });
             });
         }
+
 
         private static async Task SendCrossWorldRosterGreetingAsync(TSPlayer player)
         {
@@ -697,6 +698,13 @@ namespace Univers.MultiWorld
 
                 player.Account = account;
                 player.IsLoggedIn = true;
+
+                // Pastikan SSC & TShock mengenali player sudah terautentikasi penuh (bisa /i, /spawn, & blok jatuh)
+                if (Main.ServerSideCharacter && player.PlayerData != null)
+                {
+                    player.PlayerData.CopyCharacter(player);
+                    TShock.CharacterDB.InsertPlayerData(player);
+                }
 
                 if (freshlyClaimed)
                 {

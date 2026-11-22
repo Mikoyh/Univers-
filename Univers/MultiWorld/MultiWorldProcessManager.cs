@@ -804,7 +804,7 @@ namespace Univers.MultiWorld
                 settings["ServerPort"] = childPort;
                 settings["RequireLogin"] = false;
                 settings["AutoSave"] = true;
-                settings["DisableLoginBeforeJoin"] = true;
+                settings["DisableLoginBeforeJoin"] = false;
 
                 File.WriteAllText(targetCfgPath, root.ToString(Formatting.Indented));
 

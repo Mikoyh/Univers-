@@ -216,16 +216,16 @@ namespace Univers.MultiWorld
                 hub.AutoStart = true;
             }
 
-            if (SeedDefaultRtpWorld && !Worlds.Any(w => w.Id.Equals("rtp", StringComparison.OrdinalIgnoreCase)))
+            if (SeedDefaultRtpWorld && !Worlds.Any(w => w.Id.Equals("survival", StringComparison.OrdinalIgnoreCase)))
             {
                 Worlds.Add(new WorldDefinition
                 {
-                    Id = "rtp",
-                    DisplayName = "Wilderness RTP",
-                    Description = "World terpisah untuk farming, boss & eksplorasi",
+                    Id = "survival",
+                    DisplayName = "Wilderness Survival",
+                    Description = "World survival untuk farming, boss & eksplorasi",
                     IsHub = false,
                     Port = AllocateNextFreePort(),
-                    WorldFileName = "rtp.wld",
+                    WorldFileName = "survival.wld",
                     Size = "medium",
                     Difficulty = "classic",
                     Evil = "random",
@@ -254,7 +254,7 @@ namespace Univers.MultiWorld
                 {
                     w.ChatColorHex = w.IsHub
                         ? "38bdf8"
-                        : (w.Id.Equals("rtp", StringComparison.OrdinalIgnoreCase) ? "4ade80" : "facc15");
+                        : (w.Id.Equals("survival", StringComparison.OrdinalIgnoreCase) ? "4ade80" : "facc15");
                 }
             }
         }

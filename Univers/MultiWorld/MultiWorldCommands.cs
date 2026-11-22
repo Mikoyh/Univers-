@@ -23,6 +23,9 @@ namespace Univers.MultiWorld
             Commands.ChatCommands.Add(new Command("univers.mw.use", WorldShortcutCommand, "world", "worlds"));
             Commands.ChatCommands.Add(new Command("", LobbyShortcutCommand, "lobby", "hub"));
             Commands.ChatCommands.Add(new Command("univers.mw.use", GlobalOnlineCommand, "players", "glist"));
+            Commands.ChatCommands.Add(new Command("univers.mw.use", SurvivalShortcutCommand, "survival", "surv"));
+            Commands.ChatCommands.Add(new Command("univers.mw.use", RandomTeleportCommand, "rtp", "randomtp"));
+
         }
 
         private static void GlobalOnlineCommand(CommandArgs args)
@@ -317,6 +320,16 @@ namespace Univers.MultiWorld
                 return;
             }
 
+            if (!player.HasPermission("univers.mw.admin") &&
+                _worldSwitchCooldowns.TryGetValue(player.Name, out var nextSwitch) &&
+                DateTime.UtcNow < nextSwitch)
+            {
+                int sisa = (int)Math.Ceiling((nextSwitch - DateTime.UtcNow).TotalSeconds);
+                player.SendErrorMessage($"[MultiWorld] Tunggu {sisa} detik lagi sebelum pindah world.");
+                return;
+            }
+
+
             if (!_pendingTeleports.TryAdd(player.Name, true))
             {
                 player.SendErrorMessage("[MultiWorld] Kamu sedang dalam proses teleport! Harap diam di tempat.");
@@ -349,6 +362,7 @@ namespace Univers.MultiWorld
                 }
 
                 player.SendInfoMessage($"[MultiWorld] Memindahkan ke '{target.DisplayName}'...");
+                _worldSwitchCooldowns[player.Name] = DateTime.UtcNow.AddSeconds(10);
                 var (ok, msg) = await MultiWorldModule.TransferPlayerAsync(
                     player,
                     player.Name,
@@ -366,6 +380,108 @@ namespace Univers.MultiWorld
             {
                 _pendingTeleports.TryRemove(player.Name, out _);
             }
+        }
+
+        private static readonly ConcurrentDictionary<string, DateTime> _worldSwitchCooldowns = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, DateTime> _rtpCooldowns = new(StringComparer.OrdinalIgnoreCase);
+
+        private static void SurvivalShortcutCommand(CommandArgs args)
+        {
+            _ = ExecuteTeleportAsync(args.Player, "survival");
+        }
+
+        private static void RandomTeleportCommand(CommandArgs args)
+        {
+            var player = args.Player;
+            if (!player.RealPlayer)
+            {
+                player.SendErrorMessage("Perintah /rtp hanya bisa dipakai oleh player di dalam game.");
+                return;
+            }
+
+            if (!MultiWorldModule.CurrentWorldId.Equals("survival", StringComparison.OrdinalIgnoreCase))
+            {
+                player.SendErrorMessage("[RTP] Perintah /rtp hanya bisa digunakan di world Survival! Ketik /survival untuk masuk.");
+                return;
+            }
+
+            // Cek cooldown 3 menit (180 detik) kecuali admin
+            if (!player.HasPermission("univers.mw.admin") &&
+                _rtpCooldowns.TryGetValue(player.Name, out var nextRtp) &&
+                DateTime.UtcNow < nextRtp)
+            {
+                int sisa = (int)Math.Ceiling((nextRtp - DateTime.UtcNow).TotalSeconds);
+                player.SendErrorMessage($"[RTP] Tunggu {sisa} detik lagi sebelum menggunakan /rtp kembali.");
+                return;
+            }
+
+            if (TryFindSafeRtpSpot(out int tileX, out int tileY))
+            {
+                _rtpCooldowns[player.Name] = DateTime.UtcNow.AddMinutes(3);
+                player.Teleport(tileX * 16f, tileY * 16f);
+                string zone = tileY < Terraria.Main.worldSurface ? "Permukaan (Surface)" : "Bawah Tanah (Underground)";
+                player.SendSuccessMessage($"[RTP] Berhasil teleport acak ke {zone} ({tileX}, {tileY})!");
+            }
+            else
+            {
+                player.SendErrorMessage("[RTP] Gagal menemukan titik aman, silakan coba ketik /rtp lagi.");
+            }
+        }
+
+        private static bool TryFindSafeRtpSpot(out int safeX, out int safeY)
+        {
+            safeX = Terraria.Main.spawnTileX;
+            safeY = Terraria.Main.spawnTileY;
+            var rand = Random.Shared;
+
+            int minX = 120;
+            int maxX = Terraria.Main.maxTilesX - 120;
+            if (maxX <= minX) return false;
+
+            for (int attempt = 0; attempt < 60; attempt++)
+            {
+                int x = rand.Next(minX, maxX);
+                // 70% cari di permukaan, 30% cari gua di bawah tanah
+                bool underground = rand.Next(100) < 30;
+                int startY = underground ? (int)Terraria.Main.worldSurface + 30 : 60;
+                int endY = underground ? (int)Terraria.Main.rockLayer + 120 : (int)Terraria.Main.worldSurface + 25;
+                endY = Math.Min(endY, Terraria.Main.maxTilesY - 150);
+
+                for (int y = startY; y < endY; y++)
+                {
+                    if (IsSafeStandTile(x, y))
+                    {
+                        safeX = x;
+                        safeY = y;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static bool IsSafeStandTile(int x, int y)
+        {
+            if (x < 50 || x >= Terraria.Main.maxTilesX - 50 || y < 50 || y >= Terraria.Main.maxTilesY - 50)
+                return false;
+
+            var floor = Terraria.Main.tile[x, y];
+            if (floor == null || !floor.active() || !Terraria.Main.tileSolid[floor.type])
+                return false;
+
+            // Cek ruang kosong 2x3 tile di atas pijakan (tubuh player) & bebas cairan (lava/air)
+            for (int dx = 0; dx <= 1; dx++)
+            {
+                for (int dy = 1; dy <= 3; dy++)
+                {
+                    var body = Terraria.Main.tile[x + dx, y - dy];
+                    if (body == null) return false;
+                    if (body.liquid > 0) return false;
+                    if (body.active() && Terraria.Main.tileSolid[body.type] && !Terraria.Main.tileSolidTop[body.type])
+                        return false;
+                }
+            }
+            return true;
         }
 
 
