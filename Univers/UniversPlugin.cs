@@ -26,6 +26,7 @@ using Univers.Aetherial;
 using Univers.Shop;
 using Univers.MultiWorld;
 using Univers.Housing;
+using Univers.Survival;
 using Skynomi.Ranks;
 using Skynomi.Economy;
 
@@ -101,7 +102,10 @@ namespace Univers
                 // [8] Modul Housing & Kavling RP (Univers)
                 HousingModule.Initialize(savePath);
 
-                TShock.Log.ConsoleInfo("[Univers Core] 8 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
+                // [9] Modul Survival Don't Starve RPG (Univers)
+                SurvivalModule.Initialize(savePath);
+
+                TShock.Log.ConsoleInfo("[Univers Core] 9 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
             }
             catch (Exception ex)
             {
@@ -115,6 +119,7 @@ namespace Univers
             {
                 GeneralHooks.ReloadEvent -= OnReload;
 
+                try { SurvivalModule.Dispose(); } catch { }
                 try { HousingModule.Dispose(); } catch { }
                 try { MultiWorldModule.Dispose(); } catch { }
                 try { ShopModule.Dispose(); } catch { }
@@ -137,6 +142,7 @@ namespace Univers
                 ShopModule.Reload();
                 MultiWorldModule.Reload();
                 HousingModule.Reload();
+                SurvivalModule.Reload();
                 TShock.Log.ConsoleInfo("[Univers Core] Konfigurasi seluruh modul berhasil dimuat ulang.");
             }
             catch (Exception ex)

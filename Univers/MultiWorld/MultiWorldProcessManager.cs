@@ -902,16 +902,33 @@ namespace Univers.MultiWorld
         private static (string ExePath, string BaseArgs) ResolveServerExecutable()
         {
             string baseDir = AppContext.BaseDirectory;
-            string exeWin = Path.Combine(baseDir, "TShock.Server.exe");
-            if (File.Exists(exeWin)) return (exeWin, string.Empty);
-
-            string exeVanilla = Path.Combine(baseDir, "TerrariaServer.exe");
-            if (File.Exists(exeVanilla)) return (exeVanilla, string.Empty);
-
             string binLinux = Path.Combine(baseDir, "TShock.Server");
+            string dllPath = Path.Combine(baseDir, "TShock.Server.dll");
+            string exeWin = Path.Combine(baseDir, "TShock.Server.exe");
+            string exeVanilla = Path.Combine(baseDir, "TerrariaServer.exe");
+
+            if (!OperatingSystem.IsWindows())
+            {
+                if (File.Exists(binLinux)) return (binLinux, string.Empty);
+
+                string? linuxProcPath = Environment.ProcessPath;
+                if (!string.IsNullOrEmpty(linuxProcPath))
+                {
+                    string procName = Path.GetFileNameWithoutExtension(linuxProcPath);
+                    if (procName.Equals("dotnet", StringComparison.OrdinalIgnoreCase) && File.Exists(dllPath))
+                    {
+                        return (linuxProcPath, $"\"{dllPath}\"");
+                    }
+                    return (linuxProcPath, string.Empty);
+                }
+
+                if (File.Exists(dllPath)) return ("dotnet", $"\"{dllPath}\"");
+            }
+
+            if (File.Exists(exeWin)) return (exeWin, string.Empty);
+            if (File.Exists(exeVanilla)) return (exeVanilla, string.Empty);
             if (File.Exists(binLinux)) return (binLinux, string.Empty);
 
-            string dllPath = Path.Combine(baseDir, "TShock.Server.dll");
             string? procPath = Environment.ProcessPath;
             if (!string.IsNullOrEmpty(procPath))
             {

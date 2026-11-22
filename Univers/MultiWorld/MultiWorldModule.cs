@@ -41,6 +41,8 @@ namespace Univers.MultiWorld
         private static string _multiWorldRoot = string.Empty;
         private static System.Timers.Timer? _heartbeatTimer;
         private static bool _initialized = false;
+        private static int _effectiveMasterHubPort = 0;
+        private static int _takenOverPublicPort = 0;
 
         private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
         private static readonly ConcurrentDictionary<string, byte> _pendingEntityClearPlayers = new(StringComparer.OrdinalIgnoreCase);
@@ -97,6 +99,7 @@ namespace Univers.MultiWorld
             string ticketDbPath = Path.Combine(masterUniversDir, "univers_multiworld.db");
             TicketStore = new MultiWorldTicketStore(ticketDbPath);
 
+            ServerApi.Hooks.GameInitialize.Register(UniversPlugin.Instance, OnGameInitialize);
             ServerApi.Hooks.ServerJoin.Register(UniversPlugin.Instance, OnServerJoin);
             ServerApi.Hooks.NetGreetPlayer.Register(UniversPlugin.Instance, OnNetGreetPlayer);
             ServerApi.Hooks.ServerLeave.Register(UniversPlugin.Instance, OnServerLeave);
@@ -118,9 +121,18 @@ namespace Univers.MultiWorld
             {
                 CurrentWorldId = Config.HubWorldId;
                 MasterIpcPort = Config.ControlIpcPort;
+                TryTakeoverPublicPortAndStartProxy();
             }
 
             _initialized = true;
+        }
+
+        private static void OnGameInitialize(EventArgs args)
+        {
+            if (!IsChildProcess)
+            {
+                TryTakeoverPublicPortAndStartProxy();
+            }
         }
 
         private static void OnGamePostInitialize(EventArgs args)
@@ -135,7 +147,113 @@ namespace Univers.MultiWorld
             }
         }
 
+        private static void TryTakeoverPublicPortAndStartProxy()
+        {
+            if (IsChildProcess || !Config.Enabled || !Config.ProxyEnabled) return;
+
+            if (_takenOverPublicPort > 0 && _effectiveMasterHubPort > 0)
+            {
+                if (Netplay.ListenPort == _takenOverPublicPort)
+                {
+                    Netplay.ListenPort = _effectiveMasterHubPort;
+                }
+                if (TShock.Config?.Settings != null && TShock.Config.Settings.ServerPort == _takenOverPublicPort)
+                {
+                    TShock.Config.Settings.ServerPort = _effectiveMasterHubPort;
+                }
+                return;
+            }
+
+            if (!Config.AutoTakeoverPublicPort) return;
+
+            int requestedPort = ResolveRawRequestedPort(Config.MasterWorldPort);
+            if (requestedPort != Config.ProxyPort) return;
+
+            int internalHubPort = FindFreeInternalHubPort(Config.ProxyPort);
+            if (internalHubPort <= 0)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Tidak menemukan port internal kosong untuk menggeser Master Hub dari port {Config.ProxyPort}.");
+                return;
+            }
+
+            var candidateProxy = new MultiWorldProxy(Config.HubWorldId, internalHubPort);
+            if (!candidateProxy.Start(Config.ProxyPort, Config.ProxyPort))
+            {
+                try { candidateProxy.Dispose(); } catch { }
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Auto-Takeover port {Config.ProxyPort} gagal (port sudah dipakai proses lain).");
+                return;
+            }
+
+            Proxy = candidateProxy;
+            _takenOverPublicPort = requestedPort;
+            _effectiveMasterHubPort = internalHubPort;
+
+            Netplay.ListenPort = internalHubPort;
+            if (TShock.Config?.Settings != null)
+            {
+                TShock.Config.Settings.ServerPort = internalHubPort;
+            }
+
+            TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Auto-Takeover AKTIF: Gateway Proxy mengambil alih port publik {Proxy.ListenPort} -> Master Hub '{Config.HubWorldId}' digeser ke port internal {internalHubPort}!");
+        }
+
+        private static int FindFreeInternalHubPort(int publicProxyPort)
+        {
+            var reserved = new HashSet<int>
+            {
+                publicProxyPort,
+                Config.ControlIpcPort,
+                Config.FallbackProxyPort
+            };
+
+            foreach (var w in Config.Worlds)
+            {
+                if (!w.IsHub && w.Port > 0)
+                {
+                    reserved.Add(w.Port);
+                }
+            }
+
+            var candidates = new List<int>();
+            if (Config.MasterWorldPort > 0) candidates.Add(Config.MasterWorldPort);
+            if (publicProxyPort + 1 <= 65500) candidates.Add(publicProxyPort + 1);
+            for (int p = 7778; p <= 7900; p++) candidates.Add(p);
+
+            foreach (int candidate in candidates.Distinct())
+            {
+                if (candidate < 1024 || candidate > 65500) continue;
+                if (reserved.Contains(candidate)) continue;
+                if (IsTcpPortAvailable(candidate)) return candidate;
+            }
+
+            return 0;
+        }
+
+        private static bool IsTcpPortAvailable(int port)
+        {
+            try
+            {
+                using var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Any, port);
+                probe.Start();
+                probe.Stop();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static int ResolveListenPort(int fallbackPort)
+        {
+            if (!IsChildProcess && _effectiveMasterHubPort > 0)
+            {
+                return _effectiveMasterHubPort;
+            }
+            return ResolveRawRequestedPort(fallbackPort);
+        }
+
+        private static int ResolveRawRequestedPort(int fallbackPort)
         {
             var args = Environment.GetCommandLineArgs();
             for (int i = 0; i < args.Length - 1; i++)
@@ -148,7 +266,12 @@ namespace Univers.MultiWorld
                 }
             }
 
-            return Netplay.ListenPort > 0 ? Netplay.ListenPort : fallbackPort;
+            if (Netplay.ListenPort > 0) return Netplay.ListenPort;
+            if (TShock.Config?.Settings != null && TShock.Config.Settings.ServerPort > 0)
+            {
+                return TShock.Config.Settings.ServerPort;
+            }
+            return fallbackPort;
         }
 
         private static string ResolveMasterUniversDir(string localUniversDir)
@@ -185,26 +308,33 @@ namespace Univers.MultiWorld
 
             if (Config.ProxyEnabled)
             {
-                Proxy = new MultiWorldProxy(Config.HubWorldId, actualMasterPort);
-
-                int preferred = actualMasterPort == Config.ProxyPort ? Config.FallbackProxyPort : Config.ProxyPort;
-                int fallback = Config.FallbackProxyPort == preferred ? Config.ProxyPort + 10 : Config.FallbackProxyPort;
-
-                if (Proxy.Start(preferred, fallback))
+                if (Proxy != null && Proxy.IsListening)
                 {
-                    if (Proxy.ListenPort == Config.ProxyPort)
-                    {
-                        TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Gateway Proxy AKTIF di port {Proxy.ListenPort} -> Hub '{CurrentWorldId}' (port {actualMasterPort}). Konek via IP:{Proxy.ListenPort}!");
-                    }
-                    else
-                    {
-                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Hub berjalan di port {actualMasterPort}, Gateway Proxy dialihkan ke port {Proxy.ListenPort}.");
-                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Untuk MultiWorld di localhost/VPS, jalankan Hub di port 7778 (via build.bat / Start_MultiWorld.bat) agar Proxy di port {Config.ProxyPort}!");
-                    }
+                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Gateway Proxy AKTIF di port {Proxy.ListenPort} -> Hub '{CurrentWorldId}' (port internal {actualMasterPort}). Konek via IP:{Proxy.ListenPort}!");
                 }
                 else
                 {
-                    TShock.Log.ConsoleError($"[Univers.MultiWorld] Gagal menyalakan Gateway Proxy (port {preferred}/{fallback} terpakai).");
+                    Proxy = new MultiWorldProxy(Config.HubWorldId, actualMasterPort);
+
+                    int preferred = actualMasterPort == Config.ProxyPort ? Config.FallbackProxyPort : Config.ProxyPort;
+                    int fallback = Config.FallbackProxyPort == preferred ? Config.ProxyPort + 10 : Config.FallbackProxyPort;
+
+                    if (Proxy.Start(preferred, fallback))
+                    {
+                        if (Proxy.ListenPort == Config.ProxyPort)
+                        {
+                            TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Gateway Proxy AKTIF di port {Proxy.ListenPort} -> Hub '{CurrentWorldId}' (port {actualMasterPort}). Konek via IP:{Proxy.ListenPort}!");
+                        }
+                        else
+                        {
+                            TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Hub berjalan di port {actualMasterPort}, Gateway Proxy dialihkan ke port {Proxy.ListenPort}.");
+                            TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Untuk MultiWorld di localhost/VPS, jalankan Hub di port 7778 (atau aktifkan AutoTakeoverPublicPort=true) agar Proxy di port {Config.ProxyPort}!");
+                        }
+                    }
+                    else
+                    {
+                        TShock.Log.ConsoleError($"[Univers.MultiWorld] Gagal menyalakan Gateway Proxy (port {preferred}/{fallback} terpakai).");
+                    }
                 }
             }
 
@@ -300,12 +430,16 @@ namespace Univers.MultiWorld
 
             try { _heartbeatTimer?.Stop(); _heartbeatTimer?.Dispose(); } catch { }
 
+            ServerApi.Hooks.GameInitialize.Deregister(UniversPlugin.Instance, OnGameInitialize);
             ServerApi.Hooks.ServerJoin.Deregister(UniversPlugin.Instance, OnServerJoin);
             ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnNetGreetPlayer);
             ServerApi.Hooks.ServerLeave.Deregister(UniversPlugin.Instance, OnServerLeave);
             ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Deregister(UniversPlugin.Instance, OnGamePostInitialize);
+
+            _effectiveMasterHubPort = 0;
+            _takenOverPublicPort = 0;
 
             try { Proxy?.Dispose(); } catch { }
             try { ChildPushServer?.Dispose(); } catch { }

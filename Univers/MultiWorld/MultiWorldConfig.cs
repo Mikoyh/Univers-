@@ -82,13 +82,17 @@ namespace Univers.MultiWorld
         public bool Enabled { get; set; } = true;
         public bool ProxyEnabled { get; set; } = true;
 
+        // Jika true, saat server dijalankan langsung di port 7777 (misal di VPS / Hosting Panel),
+        // Gateway Proxy otomatis mengambil alih port 7777 dan menggeser Master Hub ke port internal (7778)
+        public bool AutoTakeoverPublicPort { get; set; } = true;
+
         // Port utama Gateway Proxy agar player cukup konek ke 127.0.0.1:7777 / IP:7777
         public int ProxyPort { get; set; } = 7777;
 
-        // Port cadangan jika Master TShock langsung berjalan di port 7777
+        // Port cadangan jika Master TShock langsung berjalan di port 7777 dan AutoTakeover dinonaktifkan
         public int FallbackProxyPort { get; set; } = 7776;
 
-        // Port default Master Hub saat dijalankan via build.bat / Start_MultiWorld
+        // Port default Master Hub saat dijalankan via build.bat / Start_MultiWorld atau Auto-Takeover
         public int MasterWorldPort { get; set; } = 7778;
 
         // Port awal alokasi otomatis Child World
@@ -107,7 +111,7 @@ namespace Univers.MultiWorld
 
         public int MaxPlayersPerChild { get; set; } = 32;
 
-        // Jika true, world "rtp" otomatis dibuatkan entri default-nya (tetap Sleep sampai dimasuki)
+        // Jika true, world "survival" otomatis dibuatkan entri default-nya
         public bool SeedDefaultRtpWorld { get; set; } = true;
 
         // Fitur sosial lintas world: chat nyambung & indikator player di world lain

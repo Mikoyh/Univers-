@@ -46,6 +46,8 @@ namespace Skynomi.Ranks
             ServerApi.Hooks.NpcKilled.Register(UniversPlugin.Instance, OnNpcKilled);
             ServerApi.Hooks.NetGetData.Register(UniversPlugin.Instance, OnGetData);
             ServerApi.Hooks.NetGreetPlayer.Register(UniversPlugin.Instance, OnPlayerGreet);
+            ServerApi.Hooks.GamePostInitialize.Register(UniversPlugin.Instance, OnGamePostInitialize);
+            PlayerHooks.PlayerPostLogin += OnPlayerPostLogin;
 
             _playtimeTimer = new System.Timers.Timer(30000);
             _playtimeTimer.Elapsed += HeartbeatTick;
@@ -62,6 +64,8 @@ namespace Skynomi.Ranks
             ServerApi.Hooks.NpcKilled.Deregister(UniversPlugin.Instance, OnNpcKilled);
             ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnGetData);
             ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnPlayerGreet);
+            ServerApi.Hooks.GamePostInitialize.Deregister(UniversPlugin.Instance, OnGamePostInitialize);
+            PlayerHooks.PlayerPostLogin -= OnPlayerPostLogin;
 
             _playtimeTimer?.Stop();
             _playtimeTimer?.Dispose();
@@ -72,56 +76,78 @@ namespace Skynomi.Ranks
         public void Reload(ReloadEventArgs e)
         {
             Config = RankConfig.Read();
+            EnsureBasicPermissionsForGroup(TShock.Groups.GetGroupByName("default"), "server reload");
             Log.Info("[Skynomi.Ranks] Konfigurasi Cosmic Rank Progression dimuat ulang.");
+        }
+
+        private void OnGamePostInitialize(EventArgs e)
+        {
+            EnsureBasicPermissionsForGroup(TShock.Groups.GetGroupByName("default"), "startup");
+        }
+
+        private void OnPlayerPostLogin(PlayerPostLoginEventArgs e)
+        {
+            EnsurePlayerPermissionsAndProfile(e.Player);
         }
 
         private void OnPlayerGreet(GreetPlayerEventArgs e)
         {
             var player = TShock.Players[e.Who];
-            if (player == null || !player.Active || !player.IsLoggedIn) return;
+            EnsurePlayerPermissionsAndProfile(player);
+        }
+
+        private void EnsurePlayerPermissionsAndProfile(TSPlayer? player)
+        {
+            if (player == null || !player.Active || !player.IsLoggedIn || player.Account == null) return;
 
             var isNewPlayer = RankModule.Database.GetOrCreate(player.Account.Name);
+            EnsureBasicPermissionsForGroup(player.Group, $"login {player.Name}");
+            EnforceWalletCap(player);
+        }
 
-            if (player.Group != null && !string.IsNullOrEmpty(player.Group.Name))
+        private static void EnsureBasicPermissionsForGroup(Group? group, string contextLabel)
+        {
+            if (group == null || string.IsNullOrEmpty(group.Name)) return;
+
+            var basicPermissions = new List<string>
             {
-                var basicPermissions = new List<string>
-                {
-                    "skynomi.rank.use",
-                    "skynomi.rank.up",
-                    "univers.job.use",
-                    "univers.job",
-                    "univers.exp.use",
-                    "univers.element.use",
-                    "univers.shop.use",
-                    "univers.ah.use",
-                    "univers.mw.use",
-                    "univers.house.use"
-                };
+                "skynomi.rank.use",
+                "skynomi.rank.up",
+                "skynomi.eco.user",
+                "univers.job.use",
+                "univers.job",
+                "univers.exp.use",
+                "univers.element.use",
+                "univers.element.awaken",
+                "univers.element",
+                "univers.shop.use",
+                "univers.ah.use",
+                "univers.mw.use",
+                "univers.house.use",
+                "univers.survival.use"
+            };
 
-                List<string> permsToAdd = new List<string>();
-                foreach (var perm in basicPermissions)
+            List<string> permsToAdd = new List<string>();
+            foreach (var perm in basicPermissions)
+            {
+                if (!group.HasPermission(perm))
                 {
-                    if (!player.Group.HasPermission(perm))
-                    {
-                        permsToAdd.Add(perm);
-                    }
-                }
-
-                if (permsToAdd.Count > 0)
-                {
-                    try
-                    {
-                        TShock.Groups.AddPermissions(player.Group.Name, permsToAdd);
-                        TShock.Log.ConsoleInfo($"[Skynomi.Automation] Berhasil otomatis menyuntik {permsToAdd.Count} perizinan ke grup '{player.Group.Name}' via login {player.Name}.");
-                    }
-                    catch (Exception ex)
-                    {
-                        TShock.Log.ConsoleError($"[Skynomi.Automation] Gagal menyuntik permission ke grup {player.Group.Name}: {ex.Message}");
-                    }
+                    permsToAdd.Add(perm);
                 }
             }
 
-            EnforceWalletCap(player);
+            if (permsToAdd.Count > 0)
+            {
+                try
+                {
+                    TShock.Groups.AddPermissions(group.Name, permsToAdd);
+                    TShock.Log.ConsoleInfo($"[Skynomi.Automation] Berhasil otomatis menyuntik {permsToAdd.Count} perizinan ke grup '{group.Name}' via {contextLabel}.");
+                }
+                catch (Exception ex)
+                {
+                    TShock.Log.ConsoleError($"[Skynomi.Automation] Gagal menyuntik permission ke grup {group.Name}: {ex.Message}");
+                }
+            }
         }
 
         #region Playtime Tracker & Economy Heartbeat

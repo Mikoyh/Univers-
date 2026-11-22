@@ -979,7 +979,7 @@ namespace Univers.Aetherial
                 rarityColor = "e879f9";
 
                 TShock.Utils.Broadcast("[i:273] [c/e879f9:[ SINGULARITAS KOSMIS ]]", 232, 121, 249);
-                TShock.Utils.Broadcast($"[c/e879f9:Pemain [c/ffffff:{player.Name}] telah membangkitkan ELEMEN RAHASIA: OMNIA (0.000001% CHANCE)!]", 232, 121, 249);
+                TShock.Utils.Broadcast($"[c/e879f9:Pemain ][c/ffffff:{player.Name}][c/e879f9: telah membangkitkan ELEMEN RAHASIA: OMNIA (0.000001% CHANCE)!]", 232, 121, 249);
                 TShock.Utils.Broadcast("[c/fdf4ff:Multiversal Instakill dan Universal Resonance diaktifkan!]", 253, 244, 255);
             }
             else if (roll < 5.0)
