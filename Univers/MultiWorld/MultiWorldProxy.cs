@@ -435,9 +435,19 @@ namespace Univers.MultiWorld
                         byte[] mappedComplete = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
                         await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedComplete, session.Cts.Token);
 
+                        // WAJIB kirim Packet 12 (PlayerSpawn) agar TShock child memindahkan State client ke 10 (in-game) & tidak kick
+                        byte[]? cachedSpawn;
+                        lock (session.CacheLock) cachedSpawn = session.PlayerSpawnPacket;
+                        if (cachedSpawn != null)
+                        {
+                            byte[] mappedSpawn12 = PrepareOutboundPacket(cachedSpawn, session.ClientSlot, newBackendSlot);
+                            await SendPacketAsync(newStream, session.BackendWriteLock, mappedSpawn12, session.Cts.Token);
+                        }
+
                         completedSpawn = true;
                         break;
                     }
+
 
                     byte[] mapped = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
                     await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mapped, session.Cts.Token);

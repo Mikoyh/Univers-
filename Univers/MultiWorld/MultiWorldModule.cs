@@ -518,70 +518,67 @@ namespace Univers.MultiWorld
             _ = SendCrossWorldRosterGreetingAsync(player);
         }
 
-     private static void SendSpawnSectionsAndTeleport(int who)
-     {
-         var p = TShock.Players[who];
-         if (p == null || !p.Active || !p.RealPlayer) return;
+        private static void SendSpawnSectionsAndTeleport(int who)
+        {
+            var p = TShock.Players[who];
+            if (p == null || !p.Active || !p.RealPlayer) return;
 
-         int spawnX = Main.spawnTileX;
-         int spawnY = Main.spawnTileY;
-         while (spawnY > 20 && Main.tile[spawnX, spawnY - 1] != null &&
-                Main.tile[spawnX, spawnY - 1].active() && Main.tileSolid[Main.tile[spawnX, spawnY - 1].type])
-         {
-             spawnY--;
-         }
+            int spawnX = Main.spawnTileX;
+            int spawnY = Main.spawnTileY;
+            while (spawnY > 20 && Main.tile[spawnX, spawnY - 1] != null &&
+                   Main.tile[spawnX, spawnY - 1].active() && Main.tileSolid[Main.tile[spawnX, spawnY - 1].type])
+            {
+                spawnY--;
+            }
 
-         float spawnPx = spawnX * 16f;
-         float spawnPy = Math.Max(10, spawnY - 3) * 16f;
+            float spawnPx = spawnX * 16f;
+            float spawnPy = Math.Max(10, spawnY - 3) * 16f;
 
-         void SendSectionsAndTp(TSPlayer targetPlayer)
-         {
-             try
-             {
-                 int maxSecX = Math.Max(1, Main.maxTilesX / 200);
-                 int maxSecY = Math.Max(1, Main.maxTilesY / 150);
-                 int centerSx = Math.Clamp(spawnX / 200, 0, maxSecX - 1);
-                 int centerSy = Math.Clamp(spawnY / 150, 0, maxSecY - 1);
-                 int minSx = Math.Max(0, centerSx - 4);
-                 int maxSx = Math.Min(maxSecX - 1, centerSx + 4);
-                 int minSy = Math.Max(0, centerSy - 3);
-                 int maxSy = Math.Min(maxSecY - 1, centerSy + 3);
+            void SendSectionsAndTp(TSPlayer targetPlayer)
+            {
+                try
+                {
+                    int maxSecX = Math.Max(1, Main.maxTilesX / 200);
+                    int maxSecY = Math.Max(1, Main.maxTilesY / 150);
+                    int centerSx = Math.Clamp(spawnX / 200, 0, maxSecX - 1);
+                    int centerSy = Math.Clamp(spawnY / 150, 0, maxSecY - 1);
+                    int minSx = Math.Max(0, centerSx - 4);
+                    int maxSx = Math.Min(maxSecX - 1, centerSx + 4);
+                    int minSy = Math.Max(0, centerSy - 3);
+                    int maxSy = Math.Min(maxSecY - 1, centerSy + 3);
 
-                 for (int sx = minSx; sx <= maxSx; sx++)
-                 {
-                     for (int sy = minSy; sy <= maxSy; sy++)
-                     {
-                         NetMessage.SendSection(targetPlayer.Index, sx, sy);
-                     }
-                 }
-                 NetMessage.SendData((int)PacketTypes.TileFrameSection, targetPlayer.Index, -1, null, minSx, minSy, maxSx, maxSy);
-             }
-             catch { }
+                    for (int sx = minSx; sx <= maxSx; sx++)
+                    {
+                        for (int sy = minSy; sy <= maxSy; sy++)
+                        {
+                            NetMessage.SendSection(targetPlayer.Index, sx, sy);
+                        }
+                    }
+                    NetMessage.SendData((int)PacketTypes.TileFrameSection, targetPlayer.Index, -1, null, minSx, minSy, maxSx, maxSy);
+                }
+                catch { }
 
-             targetPlayer.Teleport(spawnPx, spawnPy);
-         }
+                targetPlayer.Teleport(spawnPx, spawnPy);
+            }
 
-         SendSectionsAndTp(p);
+            // Tunggu 600ms & 1200ms agar berjalan SETELAH Packet 12 (PlayerSpawn) selesai diproses TShock
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(600);
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    var cur = TShock.Players[who];
+                    if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
+                });
 
-         _ = Task.Run(async () =>
-         {
-             await Task.Delay(200);
-             _mainThreadQueue.Enqueue(() =>
-             {
-                 var cur = TShock.Players[who];
-                 if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
-             });
-
-             await Task.Delay(500);
-             _mainThreadQueue.Enqueue(() =>
-             {
-                 var cur = TShock.Players[who];
-                 if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
-             });
-         });
-     }
-
-
+                await Task.Delay(600);
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    var cur = TShock.Players[who];
+                    if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
+                });
+            });
+        }
 
         private static async Task SendCrossWorldRosterGreetingAsync(TSPlayer player)
         {
