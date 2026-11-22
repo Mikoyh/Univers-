@@ -566,17 +566,20 @@ namespace Univers.MultiWorld
                 targetPlayer.Teleport(spawnPx, spawnPy);
             }
 
-            // Eksekusi setelah Packet 12 Proxy selesai diproses (250ms & 750ms)
+            // 1. Eksekusi INSTAN (0ms) supaya tidak sempat terlihat di dalam tanah
+            ForceSurfaceSpawn(p);
+
+            // 2. Follow-up cepat di 80ms & 350ms untuk mengunci posisi setelah Packet 12 Proxy lewat
             _ = Task.Run(async () =>
             {
-                await Task.Delay(250);
+                await Task.Delay(80);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
                     if (cur != null && cur.Active && cur.RealPlayer) ForceSurfaceSpawn(cur);
                 });
 
-                await Task.Delay(500);
+                await Task.Delay(270);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
