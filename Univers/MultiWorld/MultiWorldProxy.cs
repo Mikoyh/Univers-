@@ -689,6 +689,7 @@ namespace Univers.MultiWorld
                 4 or 5 or 12 or 13 or 14 or 16 or 30 or 35 or 36 or 40 or 41 or 42 or 43
                 or 50 or 51 or 54 or 55 or 58 or 62 or 66 or 80 or 96 or 99 or 102 or 117
                 or 118 or 120 or 121 or 124 or 128 or 134 or 135 or 140 or 147 => 3,
+                65 => 4, // Teleport (byte 3 = flags, byte 4 = player slot!)
                 22 or 29 => 5,
                 27 => 21,
                 _ => -1
