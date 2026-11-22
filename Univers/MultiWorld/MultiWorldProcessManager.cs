@@ -812,36 +812,14 @@ namespace Univers.MultiWorld
                     File.Copy(masterSscPath, targetSscPath, overwrite: true);
                 }
 
-                // Tautkan tshock.sqlite Master ke Child dengan hardlink agar SSC Inventory sinkron real-time
+                // Seed tshock.sqlite awal ke Child jika belum ada; live Account, Group & SSC disinkronkan via IPC Ticket (bebas SQLite lock)
                 string masterDbPath = Path.Combine(masterSavePath, "tshock.sqlite");
                 string childDbPath = Path.Combine(cfgDir, "tshock.sqlite");
-                if (File.Exists(masterDbPath))
+                if (File.Exists(masterDbPath) && !File.Exists(childDbPath))
                 {
                     try
                     {
-                        if (File.Exists(childDbPath))
-                        {
-                            File.Delete(childDbPath);
-                        }
-
-                        if (OperatingSystem.IsWindows())
-                        {
-                            var mk = Process.Start(new ProcessStartInfo
-                            {
-                                FileName = "cmd.exe",
-                                Arguments = $"/c mklink /H \"{childDbPath}\" \"{masterDbPath}\"",
-                                CreateNoWindow = true,
-                                UseShellExecute = false,
-                                RedirectStandardOutput = true,
-                                RedirectStandardError = true
-                            });
-                            mk?.WaitForExit(3000);
-                        }
-
-                        if (!File.Exists(childDbPath))
-                        {
-                            File.Copy(masterDbPath, childDbPath, overwrite: true);
-                        }
+                        File.Copy(masterDbPath, childDbPath, overwrite: false);
                     }
                     catch { }
                 }

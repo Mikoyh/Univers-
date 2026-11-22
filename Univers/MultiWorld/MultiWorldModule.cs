@@ -15,6 +15,7 @@ using System.Reflection;
 using System.Threading.Tasks;
 using System.Timers;
 using Microsoft.Xna.Framework;
+using Newtonsoft.Json;
 using Terraria;
 using TerrariaApi.Server;
 using TShockAPI;
@@ -49,6 +50,7 @@ namespace Univers.MultiWorld
         private static readonly ConcurrentDictionary<string, DateTime> _recentTransfers = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, (WorldTransferTicket Ticket, DateTime ExpiresUtc)> _claimedTickets = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _transferLockedPlayers = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _pendingSscRestores = new(StringComparer.OrdinalIgnoreCase);
 
         public static void SetTransferLock(string playerName, int seconds)
         {
@@ -610,6 +612,8 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null) return;
 
+            MultiWorldCommands.ClearPendingTeleport(player.Name);
+            ClearTransferLock(player.Name);
             TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
         }
 
@@ -618,12 +622,22 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null || !player.Active) return;
 
+            MultiWorldCommands.ClearPendingTeleport(player.Name);
+            ClearTransferLock(player.Name);
+
             bool transferred = TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
             bool hasPendingClear = _pendingEntityClearPlayers.TryRemove(player.Name, out _);
             _claimedTickets.TryRemove(player.Name, out _);
 
+            if (Main.ServerSideCharacter && player.RealPlayer && _pendingSscRestores.ContainsKey(player.Name))
+            {
+                player.IgnoreSSCPackets = true;
+            }
+
             if (transferred || hasPendingClear)
             {
+                MultiWorldCommands.MarkArrivalCooldown(player.Name, player.HasPermission("univers.mw.admin") ? 3 : 10);
+
                 int who = player.Index;
                 _mainThreadQueue.Enqueue(() =>
                 {
@@ -637,11 +651,16 @@ namespace Univers.MultiWorld
             }
             else if (!IsChildProcess)
             {
-                // Fresh login ke server Hub -> beritahu child worlds lain bahwa player online di server
+                // Fresh login ke server Hub -> catat IP asli dari Gateway Proxy & beritahu child worlds lain
+                var proxySession = Proxy?.FindSession(player.Name, player.UUID, player.Index, CurrentWorldId);
+                if (proxySession != null)
+                {
+                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] '{player.Name}' terhubung via Proxy IP: {proxySession.ClientRemoteIp}");
+                }
+
                 NotifyMasterPresenceEvent("server_join", player.Name, CurrentWorldId);
 
-                if (Proxy != null && Proxy.IsListening &&
-                    Proxy.FindSession(player.Name, player.UUID, player.Index, CurrentWorldId) == null)
+                if (Proxy != null && Proxy.IsListening && proxySession == null)
                 {
                     int hubPort = ResolveListenPort(Config.MasterWorldPort);
                     player.SendWarningMessage($"[MultiWorld] Kamu masuk lewat port langsung ({hubPort}). Konek ke port {Proxy.ListenPort} agar bisa /mw tp pindah world!");
@@ -708,14 +727,25 @@ namespace Univers.MultiWorld
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
-                    if (cur != null && cur.Active && cur.RealPlayer) SyncClientToSpawn(cur);
+                    if (cur != null && cur.Active && cur.RealPlayer)
+                    {
+                        SyncClientToSpawn(cur);
+                        ApplyPendingSscRestore(cur);
+                    }
                 });
 
                 await Task.Delay(600);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
-                    if (cur != null && cur.Active && cur.RealPlayer) SyncClientToSpawn(cur);
+                    if (cur != null && cur.Active && cur.RealPlayer)
+                    {
+                        SyncClientToSpawn(cur);
+                        if (_pendingSscRestores.ContainsKey(cur.Name))
+                        {
+                            ApplyPendingSscRestore(cur);
+                        }
+                    }
                 });
             });
         }
@@ -757,8 +787,11 @@ namespace Univers.MultiWorld
             if (player == null || string.IsNullOrWhiteSpace(player.Name)) return;
 
             string pName = player.Name;
+            MultiWorldCommands.ClearPendingTeleport(pName);
+            ClearTransferLock(pName);
             _pendingEntityClearPlayers.TryRemove(pName, out _);
             _claimedTickets.TryRemove(pName, out _);
+            _pendingSscRestores.TryRemove(pName, out _);
 
             bool wasTransfer = _recentTransfers.TryGetValue(pName, out var untilUtc) && DateTime.UtcNow <= untilUtc;
             if (!wasTransfer && player.RealPlayer)
@@ -844,6 +877,7 @@ namespace Univers.MultiWorld
                                 ClientUuid = res.ClientUuid,
                                 HasWildcardPermission = res.HasWildcardPermission,
                                 GroupPermissions = res.GroupPermissions,
+                                SscSnapshotJson = res.SscSnapshotJson,
                                 TargetWorldId = CurrentWorldId
                             };
                         }
@@ -908,26 +942,14 @@ namespace Univers.MultiWorld
                 player.Account = account;
                 player.IsLoggedIn = true;
 
-                // Muat ulang inventory terbaru dari database SSC agar sinkron lintas world
+                // Lindungi SSC dari paket handshake replay (Packet 5/16/42) dan jadwalkan restore SETELAH CompleteConnection (49)
                 if (Main.ServerSideCharacter && player.RealPlayer)
                 {
-                    try
+                    player.IgnoreSSCPackets = true;
+                    if (!string.IsNullOrWhiteSpace(ticket.SscSnapshotJson) || !_pendingSscRestores.ContainsKey(player.Name))
                     {
-                        var latestData = TShock.CharacterDB.GetPlayerData(player, account.ID);
-                        if (latestData != null)
-                        {
-                            player.PlayerData = latestData;
-                            latestData.RestoreCharacter(player);
-                        }
+                        _pendingSscRestores[player.Name] = ticket.SscSnapshotJson ?? string.Empty;
                     }
-                    catch { }
-                }
-
-                // Pastikan SSC & TShock mengenali player sudah terautentikasi penuh (bisa /i, /spawn, & blok jatuh)
-                if (Main.ServerSideCharacter && player.PlayerData != null)
-                {
-                    player.PlayerData.CopyCharacter(player);
-                    TShock.CharacterDB.InsertPlayerData(player);
                 }
 
                 if (freshlyClaimed)
@@ -941,6 +963,228 @@ namespace Univers.MultiWorld
             }
 
             return true;
+        }
+
+        private class TransferSscItem
+        {
+            public int Type { get; set; }
+            public int Stack { get; set; }
+            public byte Prefix { get; set; }
+        }
+
+        private class TransferSscSnapshot
+        {
+            public int Health { get; set; }
+            public int MaxHealth { get; set; }
+            public int Mana { get; set; }
+            public int MaxMana { get; set; }
+            public bool ExtraAccessory { get; set; }
+            public bool UnlockedBiomeTorches { get; set; }
+            public int AnglerQuestsFinished { get; set; }
+            public List<TransferSscItem> Inventory { get; set; } = new();
+            public List<TransferSscItem> Armor { get; set; } = new();
+            public List<TransferSscItem> Dye { get; set; } = new();
+            public List<TransferSscItem> MiscEquips { get; set; } = new();
+            public List<TransferSscItem> MiscDyes { get; set; } = new();
+            public List<TransferSscItem> Bank { get; set; } = new();
+            public List<TransferSscItem> Bank2 { get; set; } = new();
+            public List<TransferSscItem> Bank3 { get; set; } = new();
+            public List<TransferSscItem> Bank4 { get; set; } = new();
+        }
+
+        private static List<TransferSscItem> CaptureItemArray(Item[]? items)
+        {
+            var list = new List<TransferSscItem>();
+            if (items == null) return list;
+            for (int i = 0; i < items.Length; i++)
+            {
+                var it = items[i];
+                if (it != null && !it.IsAir && it.type > 0 && it.stack > 0)
+                {
+                    list.Add(new TransferSscItem { Type = it.type, Stack = it.stack, Prefix = it.prefix });
+                }
+                else
+                {
+                    list.Add(new TransferSscItem());
+                }
+            }
+            return list;
+        }
+
+        private static void RestoreItemArray(Item[]? target, List<TransferSscItem>? source)
+        {
+            if (target == null || source == null) return;
+            for (int i = 0; i < target.Length; i++)
+            {
+                if (target[i] == null) target[i] = new Item();
+                if (i < source.Count && source[i].Type > 0 && source[i].Stack > 0)
+                {
+                    target[i].SetDefaults(source[i].Type);
+                    target[i].stack = source[i].Stack;
+                    if (source[i].Prefix > 0) target[i].Prefix(source[i].Prefix);
+                }
+                else
+                {
+                    target[i].SetDefaults(0);
+                    target[i].stack = 0;
+                    target[i].prefix = 0;
+                }
+            }
+        }
+
+        private static string CapturePlayerSscJson(TSPlayer? player)
+        {
+            if (player == null || !player.RealPlayer || !Main.ServerSideCharacter || !player.IsLoggedIn || player.TPlayer == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                var tp = player.TPlayer;
+                var snap = new TransferSscSnapshot
+                {
+                    Health = Math.Max(1, tp.statLife),
+                    MaxHealth = Math.Max(100, tp.statLifeMax),
+                    Mana = Math.Max(0, tp.statMana),
+                    MaxMana = Math.Max(20, tp.statManaMax),
+                    ExtraAccessory = tp.extraAccessory,
+                    UnlockedBiomeTorches = tp.unlockedBiomeTorches,
+                    AnglerQuestsFinished = tp.anglerQuestsFinished,
+                    Inventory = CaptureItemArray(tp.inventory),
+                    Armor = CaptureItemArray(tp.armor),
+                    Dye = CaptureItemArray(tp.dye),
+                    MiscEquips = CaptureItemArray(tp.miscEquips),
+                    MiscDyes = CaptureItemArray(tp.miscDyes),
+                    Bank = CaptureItemArray(tp.bank?.item),
+                    Bank2 = CaptureItemArray(tp.bank2?.item),
+                    Bank3 = CaptureItemArray(tp.bank3?.item),
+                    Bank4 = CaptureItemArray(tp.bank4?.item)
+                };
+
+                player.PlayerData?.CopyCharacter(player);
+                InsertPlayerDataWithRetry(player);
+                return JsonConvert.SerializeObject(snap);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal capture SSC '{player.Name}': {ex.Message}");
+                return string.Empty;
+            }
+        }
+
+        private static void ApplyPendingSscRestore(TSPlayer player)
+        {
+            if (player == null || !player.Active || !player.RealPlayer) return;
+
+            bool hadPending = _pendingSscRestores.TryRemove(player.Name, out string? sscJson);
+            if (!Main.ServerSideCharacter)
+            {
+                player.IgnoreSSCPackets = false;
+                return;
+            }
+
+            try
+            {
+                if (player.Account != null && player.PlayerData == null)
+                {
+                    player.PlayerData = GetPlayerDataWithRetry(player, player.Account.ID);
+                }
+
+                if (hadPending && !string.IsNullOrWhiteSpace(sscJson) && player.TPlayer != null)
+                {
+                    var snap = JsonConvert.DeserializeObject<TransferSscSnapshot>(sscJson);
+                    if (snap != null)
+                    {
+                        var tp = player.TPlayer;
+                        tp.statLifeMax = Math.Max(100, snap.MaxHealth);
+                        tp.statLife = Math.Clamp(snap.Health, 1, tp.statLifeMax);
+                        tp.statManaMax = Math.Max(20, snap.MaxMana);
+                        tp.statMana = Math.Clamp(snap.Mana, 0, tp.statManaMax);
+                        tp.extraAccessory = snap.ExtraAccessory;
+                        tp.unlockedBiomeTorches = snap.UnlockedBiomeTorches;
+                        tp.anglerQuestsFinished = snap.AnglerQuestsFinished;
+
+                        RestoreItemArray(tp.inventory, snap.Inventory);
+                        RestoreItemArray(tp.armor, snap.Armor);
+                        RestoreItemArray(tp.dye, snap.Dye);
+                        RestoreItemArray(tp.miscEquips, snap.MiscEquips);
+                        RestoreItemArray(tp.miscDyes, snap.MiscDyes);
+                        RestoreItemArray(tp.bank?.item, snap.Bank);
+                        RestoreItemArray(tp.bank2?.item, snap.Bank2);
+                        RestoreItemArray(tp.bank3?.item, snap.Bank3);
+                        RestoreItemArray(tp.bank4?.item, snap.Bank4);
+
+                        if (player.PlayerData != null)
+                        {
+                            player.PlayerData.CopyCharacter(player);
+                            player.PlayerData.RestoreCharacter(player);
+                            InsertPlayerDataWithRetry(player);
+                        }
+                        else
+                        {
+                            NetMessage.SendData((int)PacketTypes.PlayerInfo, -1, -1, null, player.Index);
+                            NetMessage.SendData((int)PacketTypes.PlayerHp, -1, -1, null, player.Index);
+                            NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, player.Index);
+                            for (int i = 0; i < 59; i++)
+                            {
+                                NetMessage.SendData((int)PacketTypes.PlayerSlot, player.Index, -1, null, player.Index, i);
+                            }
+                        }
+                        return;
+                    }
+                }
+
+                if (player.Account != null)
+                {
+                    var latestData = GetPlayerDataWithRetry(player, player.Account.ID);
+                    if (latestData != null && latestData.exists)
+                    {
+                        player.PlayerData = latestData;
+                        latestData.RestoreCharacter(player);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal restore SSC '{player.Name}': {ex.Message}");
+            }
+            finally
+            {
+                player.IgnoreSSCPackets = false;
+            }
+        }
+
+        private static PlayerData? GetPlayerDataWithRetry(TSPlayer player, int accountId)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    return TShock.CharacterDB.GetPlayerData(player, accountId);
+                }
+                catch
+                {
+                    System.Threading.Thread.Sleep(25);
+                }
+            }
+            return null;
+        }
+
+        private static void InsertPlayerDataWithRetry(TSPlayer player)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    TShock.CharacterDB.InsertPlayerData(player);
+                    return;
+                }
+                catch
+                {
+                    System.Threading.Thread.Sleep(25);
+                }
+            }
         }
 
         private static Group? EnsureSyncedGroup(string groupName, bool hasWildcard, string permissionsCsv)
@@ -1072,23 +1316,13 @@ namespace Univers.MultiWorld
             string uuid,
             string targetWorldId)
         {
-            // Paksa simpan inventory & status SSC terbaru sebelum pindah world agar tidak rollback
-            if (requester != null && requester.RealPlayer && Main.ServerSideCharacter && requester.IsLoggedIn)
-            {
-                try
-                {
-                    requester.PlayerData?.CopyCharacter(requester);
-                    TShock.CharacterDB.InsertPlayerData(requester);
-                }
-                catch { }
-            }
-
+            string sscSnapshotJson = CapturePlayerSscJson(requester);
             ExtractGroupPermissions(groupName, requester, out bool hasWildcard, out string groupPerms);
 
             if (IsChildProcess)
             {
                 _recentTransfers[playerName] = DateTime.UtcNow.AddSeconds(12);
-                return await RelayTransferToMasterAsync(playerName, accountName, groupName, uuid, hasWildcard, groupPerms, targetWorldId);
+                return await RelayTransferToMasterAsync(playerName, accountName, groupName, uuid, hasWildcard, groupPerms, sscSnapshotJson, targetWorldId);
             }
 
             var target = Config.GetWorld(targetWorldId);
@@ -1141,7 +1375,7 @@ namespace Univers.MultiWorld
                 : target.Port;
 
             _recentTransfers[playerName] = DateTime.UtcNow.AddSeconds(12);
-            TicketStore.IssueTicket(playerName, accountName, groupName, uuid, session.CurrentWorldId, target.Id, hasWildcard, groupPerms);
+            TicketStore.IssueTicket(playerName, accountName, groupName, uuid, session.CurrentWorldId, target.Id, hasWildcard, groupPerms, sscSnapshotJson);
             if (!target.IsHub)
             {
                 ProcessManager?.MarkWorldPlayerArriving(target.Id, 90);
@@ -1162,6 +1396,7 @@ namespace Univers.MultiWorld
             string uuid,
             bool hasWildcard,
             string groupPermissions,
+            string sscSnapshotJson,
             string targetWorldId)
         {
             var res = await MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
@@ -1174,8 +1409,9 @@ namespace Univers.MultiWorld
                 ClientUuid = uuid,
                 HasWildcardPermission = hasWildcard,
                 GroupPermissions = groupPermissions,
+                SscSnapshotJson = sscSnapshotJson,
                 TargetWorldId = targetWorldId
-            }, timeoutMs: 320_000);
+            }, timeoutMs: 90_000);
 
             return (res.Success, res.Message);
         }
@@ -1237,7 +1473,8 @@ namespace Univers.MultiWorld
                                 GroupName = claimed.GroupName,
                                 ClientUuid = claimed.ClientUuid,
                                 HasWildcardPermission = claimed.HasWildcardPermission,
-                                GroupPermissions = claimed.GroupPermissions
+                                GroupPermissions = claimed.GroupPermissions,
+                                SscSnapshotJson = claimed.SscSnapshotJson
                             };
                         }
 
@@ -1278,7 +1515,7 @@ namespace Univers.MultiWorld
                             string finalPerms = !string.IsNullOrWhiteSpace(masterPerms) ? masterPerms : req.GroupPermissions;
 
                             _recentTransfers[req.PlayerName] = DateTime.UtcNow.AddSeconds(12);
-                            TicketStore.IssueTicket(req.PlayerName, req.AccountName, req.GroupName, req.ClientUuid, session.CurrentWorldId, target.Id, finalWildcard, finalPerms);
+                            TicketStore.IssueTicket(req.PlayerName, req.AccountName, req.GroupName, req.ClientUuid, session.CurrentWorldId, target.Id, finalWildcard, finalPerms, req.SscSnapshotJson);
                             if (!target.IsHub)
                             {
                                 ProcessManager?.MarkWorldPlayerArriving(target.Id, 90);

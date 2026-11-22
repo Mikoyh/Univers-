@@ -297,7 +297,25 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static readonly ConcurrentDictionary<string, bool> _pendingTeleports = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, DateTime> _pendingTeleports = new(StringComparer.OrdinalIgnoreCase);
+
+        public static void ClearPendingTeleport(string playerName)
+        {
+            if (!string.IsNullOrWhiteSpace(playerName))
+            {
+                _pendingTeleports.TryRemove(playerName, out _);
+            }
+        }
+
+        public static void MarkArrivalCooldown(string playerName, int seconds = 10)
+        {
+            if (string.IsNullOrWhiteSpace(playerName) || seconds <= 0) return;
+            DateTime targetUntil = DateTime.UtcNow.AddSeconds(seconds);
+            _worldSwitchCooldowns.AddOrUpdate(
+                playerName,
+                targetUntil,
+                (_, existing) => existing > targetUntil ? existing : targetUntil);
+        }
 
         private static async Task ExecuteTeleportAsync(TSPlayer player, string targetWorldId)
         {
@@ -320,26 +338,28 @@ namespace Univers.MultiWorld
                 return;
             }
 
-            if (!player.HasPermission("univers.mw.admin") &&
-                _worldSwitchCooldowns.TryGetValue(player.Name, out var nextSwitch) &&
+            bool isAdmin = player.HasPermission("univers.mw.admin");
+            int cooldownSec = isAdmin ? 3 : 10;
+            if (_worldSwitchCooldowns.TryGetValue(player.Name, out var nextSwitch) &&
                 DateTime.UtcNow < nextSwitch)
             {
-                int sisa = (int)Math.Ceiling((nextSwitch - DateTime.UtcNow).TotalSeconds);
+                int sisa = Math.Max(1, (int)Math.Ceiling((nextSwitch - DateTime.UtcNow).TotalSeconds));
                 player.SendErrorMessage($"[MultiWorld] Tunggu {sisa} detik lagi sebelum pindah world.");
                 return;
             }
 
-
-            if (!_pendingTeleports.TryAdd(player.Name, true))
+            if (_pendingTeleports.TryGetValue(player.Name, out var pendingUntil) && DateTime.UtcNow < pendingUntil)
             {
                 player.SendErrorMessage("[MultiWorld] Kamu sedang dalam proses teleport! Harap diam di tempat.");
                 return;
             }
 
+            _pendingTeleports[player.Name] = DateTime.UtcNow.AddSeconds(25);
+
             try
             {
                 int warmupSeconds = 5;
-                MultiWorldModule.SetTransferLock(player.Name, warmupSeconds + 5);
+                MultiWorldModule.SetTransferLock(player.Name, warmupSeconds + 2);
                 Vector2 startPos = player.TPlayer.position;
                 player.SendInfoMessage($"[MultiWorld] Teleport ke '{target.DisplayName}' dalam {warmupSeconds} detik. JANGAN BERGERAK!");
 
@@ -362,8 +382,10 @@ namespace Univers.MultiWorld
                     }
                 }
 
+                // Perpanjang sedikit expiry selama proses pindah world berlangsung
+                _pendingTeleports[player.Name] = DateTime.UtcNow.AddSeconds(60);
                 player.SendInfoMessage($"[MultiWorld] Memindahkan ke '{target.DisplayName}'...");
-                _worldSwitchCooldowns[player.Name] = DateTime.UtcNow.AddSeconds(10);
+                _worldSwitchCooldowns[player.Name] = DateTime.UtcNow.AddSeconds(cooldownSec);
                 var (ok, msg) = await MultiWorldModule.TransferPlayerAsync(
                     player,
                     player.Name,
@@ -377,14 +399,11 @@ namespace Univers.MultiWorld
                     player.SendErrorMessage($"[MultiWorld] {msg}");
                 }
             }
-            
             finally
             {
                 MultiWorldModule.ClearTransferLock(player.Name);
                 _pendingTeleports.TryRemove(player.Name, out _);
             }
-
-
         }
 
         private static readonly ConcurrentDictionary<string, DateTime> _worldSwitchCooldowns = new(StringComparer.OrdinalIgnoreCase);

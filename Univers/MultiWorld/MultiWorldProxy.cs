@@ -35,6 +35,7 @@ namespace Univers.MultiWorld
 
         public byte ClientSlot { get; set; } = 255;
         public byte BackendSlot { get; set; } = 255;
+        public string ClientRemoteIp { get; } = "unknown";
         public volatile bool IsSwitching = false;
         public volatile bool IsClosed = false;
 
@@ -64,6 +65,11 @@ namespace Univers.MultiWorld
         {
             Client = client;
             Client.NoDelay = true;
+            try
+            {
+                ClientRemoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "unknown";
+            }
+            catch { }
             ClientStream = client.GetStream();
             CurrentWorldId = initialWorldId;
         }
@@ -335,6 +341,11 @@ namespace Univers.MultiWorld
             bool oldBackendClosed = false;
             try
             {
+                if (session.CurrentWorldId.Equals(targetWorldId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (false, $"Kamu sudah berada di world '{targetWorldId}'.");
+                }
+
                 if (session.IsClosed || session.ConnectRequestPacket == null || session.PlayerInfoPacket == null)
                 {
                     return (false, "Data handshake client belum siap untuk berpindah world.");
@@ -479,7 +490,7 @@ namespace Univers.MultiWorld
 
                 // Jalankan pump loop baru untuk Backend B
                 _ = PumpBackendToClientAsync(session, newBackend, newStream);
-                TShock.Log.ConsoleInfo($"[Univers.MultiWorld] '{playerName}' berhasil pindah ke '{targetWorldId}' (Port {targetPort}).");
+                TShock.Log.ConsoleInfo($"[Univers.MultiWorld] '{playerName}' ({session.ClientRemoteIp}) pindah ke '{targetWorldId}' (Port {targetPort}).");
                 return (true, $"Berhasil berpindah ke world '{targetWorldId}'.");
             }
             catch (Exception ex)

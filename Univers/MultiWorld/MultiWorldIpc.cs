@@ -54,6 +54,7 @@ namespace Univers.MultiWorld
         public string ClientUuid { get; set; } = string.Empty;
         public bool HasWildcardPermission { get; set; }
         public string GroupPermissions { get; set; } = string.Empty;
+        public string SscSnapshotJson { get; set; } = string.Empty;
         public string TargetWorldId { get; set; } = string.Empty;
         public string FormattedMessage { get; set; } = string.Empty;
         public byte ColorR { get; set; } = 255;
@@ -72,6 +73,7 @@ namespace Univers.MultiWorld
         public string ClientUuid { get; set; } = string.Empty;
         public bool HasWildcardPermission { get; set; }
         public string GroupPermissions { get; set; } = string.Empty;
+        public string SscSnapshotJson { get; set; } = string.Empty;
         public List<WorldStatusSnapshot> Worlds { get; set; } = new();
     }
 

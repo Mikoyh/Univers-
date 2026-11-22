@@ -23,6 +23,7 @@ namespace Univers.MultiWorld
         public string ClientUuid { get; set; } = string.Empty;
         public bool HasWildcardPermission { get; set; }
         public string GroupPermissions { get; set; } = string.Empty;
+        public string SscSnapshotJson { get; set; } = string.Empty;
         public string SourceWorldId { get; set; } = string.Empty;
         public string TargetWorldId { get; set; } = string.Empty;
         public DateTime IssuedUtc { get; set; } = DateTime.UtcNow;
@@ -57,7 +58,8 @@ namespace Univers.MultiWorld
             string sourceWorldId,
             string targetWorldId,
             bool hasWildcardPermission = false,
-            string groupPermissions = "")
+            string groupPermissions = "",
+            string sscSnapshotJson = "")
         {
             if (string.IsNullOrWhiteSpace(playerName) || string.IsNullOrWhiteSpace(targetWorldId)) return;
 
@@ -69,6 +71,7 @@ namespace Univers.MultiWorld
                 ClientUuid = uuid ?? string.Empty,
                 HasWildcardPermission = hasWildcardPermission,
                 GroupPermissions = groupPermissions ?? string.Empty,
+                SscSnapshotJson = sscSnapshotJson ?? string.Empty,
                 SourceWorldId = sourceWorldId ?? string.Empty,
                 TargetWorldId = targetWorldId,
                 IssuedUtc = DateTime.UtcNow,
