@@ -85,10 +85,22 @@ namespace Univers.Jobs
         public ActiveJobShift GetOrCreateShift(string jobId)
         {
             jobId = jobId.ToLowerInvariant();
+            var expected = CreateDefaultShiftForLevel(jobId, GetJobLevel(jobId));
             if (!ActiveShifts.TryGetValue(jobId, out var shift))
             {
-                shift = CreateDefaultShiftForLevel(jobId, GetJobLevel(jobId));
-                ActiveShifts[jobId] = shift;
+                ActiveShifts[jobId] = expected;
+                return expected;
+            }
+
+            // Sinkronkan target/upah lama di database agar ikut aturan balance terbaru tanpa mereset progres/cooldown
+            if (shift.RewardCoins != expected.RewardCoins || shift.RewardExp != expected.RewardExp || shift.TargetId != expected.TargetId)
+            {
+                shift.TargetId = expected.TargetId;
+                shift.TargetName = expected.TargetName;
+                shift.RequiredCount = expected.RequiredCount;
+                shift.CurrentCount = Math.Min(shift.CurrentCount, expected.RequiredCount - 1);
+                shift.RewardCoins = expected.RewardCoins;
+                shift.RewardExp = expected.RewardExp;
             }
             return shift;
         }
@@ -106,75 +118,121 @@ namespace Univers.Jobs
             if (!JobExp.ContainsKey(jobId)) JobExp[jobId] = 0;
 
             JobExp[jobId] += amount;
-            int currentLvl = JobLevels[jobId];
-            long requiredForNext = (long)(150 * Math.Pow(currentLvl, 1.45));
+            int currentLvl = Math.Clamp(JobLevels[jobId], 1, 50);
+            JobLevels[jobId] = currentLvl;
 
-            if (JobExp[jobId] >= requiredForNext && currentLvl < 50)
+            bool leveledUp = false;
+            while (currentLvl < 50)
             {
-                JobLevels[jobId]++;
-                newLevel = JobLevels[jobId];
-                return true;
+                long requiredForNext = (long)(150 * Math.Pow(currentLvl, 1.45));
+                if (JobExp[jobId] >= requiredForNext)
+                {
+                    JobExp[jobId] -= requiredForNext;
+                    currentLvl++;
+                    JobLevels[jobId] = currentLvl;
+                    leveledUp = true;
+                }
+                else
+                {
+                    break;
+                }
             }
 
             newLevel = currentLvl;
-            return false;
+            return leveledUp;
         }
 
         private static ActiveJobShift CreateDefaultShiftForLevel(string jobId, int level)
         {
+            level = Math.Clamp(level, 1, 50);
+
             if (jobId == "miner")
             {
                 if (level < 5)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Stone Block", TargetId = TileID.Stone, RequiredCount = 30, RewardCoins = 5, RewardExp = 25 };
+                    return new ActiveJobShift { JobId = "miner", TargetName = "Stone Block", TargetId = TileID.Stone, RequiredCount = 30, RewardCoins = 40, RewardExp = 35 };
                 if (level < 10)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Copper / Tin Ore", TargetId = TileID.Copper, RequiredCount = 20, RewardCoins = 8, RewardExp = 40 };
-                if (level < 15)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Iron / Lead Ore", TargetId = TileID.Iron, RequiredCount = 20, RewardCoins = 12, RewardExp = 65 };
+                    return new ActiveJobShift { JobId = "miner", TargetName = "Copper / Tin Ore", TargetId = TileID.Copper, RequiredCount = 20, RewardCoins = 75, RewardExp = 70 };
+                if (level < 17)
+                    return new ActiveJobShift { JobId = "miner", TargetName = "Iron / Lead Ore", TargetId = TileID.Iron, RequiredCount = 20, RewardCoins = 140, RewardExp = 125 };
                 if (level < 25)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Silver / Tungsten Ore", TargetId = TileID.Silver, RequiredCount = 15, RewardCoins = 18, RewardExp = 90 };
-                if (level < 40)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Gold / Platinum Ore", TargetId = TileID.Gold, RequiredCount = 15, RewardCoins = 25, RewardExp = 130 };
-                if (level < 60)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Hellstone Ore", TargetId = TileID.Hellstone, RequiredCount = 12, RewardCoins = 40, RewardExp = 200 };
-                if (level < 85)
-                    return new ActiveJobShift { JobId = "miner", TargetName = "Cobalt / Palladium", TargetId = TileID.Cobalt, RequiredCount = 10, RewardCoins = 65, RewardExp = 350 };
+                    return new ActiveJobShift { JobId = "miner", TargetName = "Silver / Tungsten Ore", TargetId = TileID.Silver, RequiredCount = 15, RewardCoins = 260, RewardExp = 220 };
+                if (level < 33)
+                    return new ActiveJobShift { JobId = "miner", TargetName = "Gold / Platinum Ore", TargetId = TileID.Gold, RequiredCount = 15, RewardCoins = 450, RewardExp = 360 };
+                if (level < 41)
+                    return new ActiveJobShift { JobId = "miner", TargetName = "Hellstone / Cobalt", TargetId = TileID.Hellstone, RequiredCount = 12, RewardCoins = 750, RewardExp = 580 };
 
-                return new ActiveJobShift { JobId = "miner", TargetName = "Chlorophyte Ore", TargetId = TileID.Chlorophyte, RequiredCount = 8, RewardCoins = 110, RewardExp = 600 };
+                return new ActiveJobShift { JobId = "miner", TargetName = "Chlorophyte Ore", TargetId = TileID.Chlorophyte, RequiredCount = 10, RewardCoins = 1150, RewardExp = 900 };
             }
 
             if (jobId == "fisher")
             {
-                if (level < 6)
-                    return new ActiveJobShift { JobId = "fisher", TargetName = "Bass (Air Tawar)", TargetId = ItemID.Bass, RequiredCount = 4, RewardCoins = 6, RewardExp = 30 };
-                if (level < 15)
-                    return new ActiveJobShift { JobId = "fisher", TargetName = "Tuna (Samudra)", TargetId = ItemID.Tuna, RequiredCount = 3, RewardCoins = 14, RewardExp = 75 };
-                if (level < 30)
-                    return new ActiveJobShift { JobId = "fisher", TargetName = "Wooden / Iron Crate", TargetId = ItemID.WoodenCrate, RequiredCount = 1, RewardCoins = 30, RewardExp = 150 };
-                if (level < 60)
-                    return new ActiveJobShift { JobId = "fisher", TargetName = "Prismite (Danau Hallow)", TargetId = ItemID.Prismite, RequiredCount = 1, RewardCoins = 60, RewardExp = 300 };
+                if (level < 5)
+                    return new ActiveJobShift { JobId = "fisher", TargetName = "Bass (Air Tawar)", TargetId = ItemID.Bass, RequiredCount = 4, RewardCoins = 45, RewardExp = 40 };
+                if (level < 10)
+                    return new ActiveJobShift { JobId = "fisher", TargetName = "Tuna (Samudra)", TargetId = ItemID.Tuna, RequiredCount = 3, RewardCoins = 85, RewardExp = 80 };
+                if (level < 17)
+                    return new ActiveJobShift { JobId = "fisher", TargetName = "Wooden / Iron Crate", TargetId = ItemID.WoodenCrate, RequiredCount = 1, RewardCoins = 160, RewardExp = 145 };
+                if (level < 25)
+                    return new ActiveJobShift { JobId = "fisher", TargetName = "Prismite (Hallow)", TargetId = ItemID.Prismite, RequiredCount = 1, RewardCoins = 290, RewardExp = 240 };
+                if (level < 33)
+                    return new ActiveJobShift { JobId = "fisher", TargetName = "Crate / Rare Fish", TargetId = ItemID.WoodenCrate, RequiredCount = 2, RewardCoins = 500, RewardExp = 400 };
+                if (level < 41)
+                    return new ActiveJobShift { JobId = "fisher", TargetName = "Golden Crate", TargetId = ItemID.GoldenCrate, RequiredCount = 1, RewardCoins = 850, RewardExp = 650 };
 
-                return new ActiveJobShift { JobId = "fisher", TargetName = "Golden Crate / Carp", TargetId = ItemID.GoldenCrate, RequiredCount = 1, RewardCoins = 130, RewardExp = 700 };
+                return new ActiveJobShift { JobId = "fisher", TargetName = "Golden Crate / Carp", TargetId = ItemID.GoldenCrate, RequiredCount = 1, RewardCoins = 1250, RewardExp = 950 };
             }
 
             if (jobId == "hunter")
             {
-                if (level < 4)
-                    return new ActiveJobShift { JobId = "hunter", TargetName = "Green / Blue Slime", TargetId = NPCID.GreenSlime, RequiredCount = 10, RewardCoins = 4, RewardExp = 20 };
+                if (level < 5)
+                    return new ActiveJobShift { JobId = "hunter", TargetName = "Green / Blue Slime", TargetId = NPCID.GreenSlime, RequiredCount = 10, RewardCoins = 35, RewardExp = 35 };
                 if (level < 10)
-                    return new ActiveJobShift { JobId = "hunter", TargetName = "Surface Zombie", TargetId = NPCID.Zombie, RequiredCount = 8, RewardCoins = 7, RewardExp = 35 };
-                if (level < 20)
-                    return new ActiveJobShift { JobId = "hunter", TargetName = "Cave Jellyfish / Bat", TargetId = NPCID.CaveBat, RequiredCount = 8, RewardCoins = 12, RewardExp = 60 };
-                if (level < 35)
-                    return new ActiveJobShift { JobId = "hunter", TargetName = "Eater of Souls / Crimera", TargetId = NPCID.EaterofSouls, RequiredCount = 10, RewardCoins = 22, RewardExp = 110 };
-                if (level < 55)
-                    return new ActiveJobShift { JobId = "hunter", TargetName = "Underworld Demon", TargetId = NPCID.Demon, RequiredCount = 6, RewardCoins = 45, RewardExp = 220 };
-                if (level < 80)
-                    return new ActiveJobShift { JobId = "hunter", TargetName = "Armored Skeleton", TargetId = NPCID.ArmoredSkeleton, RequiredCount = 6, RewardCoins = 75, RewardExp = 400 };
+                    return new ActiveJobShift { JobId = "hunter", TargetName = "Surface Zombie", TargetId = NPCID.Zombie, RequiredCount = 8, RewardCoins = 70, RewardExp = 65 };
+                if (level < 17)
+                    return new ActiveJobShift { JobId = "hunter", TargetName = "Cave Bat / Cavern Mob", TargetId = NPCID.CaveBat, RequiredCount = 8, RewardCoins = 135, RewardExp = 120 };
+                if (level < 25)
+                    return new ActiveJobShift { JobId = "hunter", TargetName = "Eater of Souls / Crimera", TargetId = NPCID.EaterofSouls, RequiredCount = 10, RewardCoins = 250, RewardExp = 215 };
+                if (level < 33)
+                    return new ActiveJobShift { JobId = "hunter", TargetName = "Underworld Demon", TargetId = NPCID.Demon, RequiredCount = 6, RewardCoins = 440, RewardExp = 370 };
+                if (level < 41)
+                    return new ActiveJobShift { JobId = "hunter", TargetName = "Armored Skeleton", TargetId = NPCID.ArmoredSkeleton, RequiredCount = 6, RewardCoins = 760, RewardExp = 600 };
 
-                return new ActiveJobShift { JobId = "hunter", TargetName = "Chaos Elemental", TargetId = NPCID.ChaosElemental, RequiredCount = 5, RewardCoins = 140, RewardExp = 750 };
+                return new ActiveJobShift { JobId = "hunter", TargetName = "Chaos Elemental", TargetId = NPCID.ChaosElemental, RequiredCount = 5, RewardCoins = 1200, RewardExp = 950 };
             }
 
-            return new ActiveJobShift { JobId = jobId, TargetName = "Wood Block", TargetId = TileID.Trees, RequiredCount = 20, RewardCoins = 4, RewardExp = 20 };
+            if (jobId == "farmer")
+            {
+                if (level < 5)
+                    return new ActiveJobShift { JobId = "farmer", TargetName = "Wild Plants / Herbs", TargetId = 83, RequiredCount = 15, RewardCoins = 35, RewardExp = 35 };
+                if (level < 10)
+                    return new ActiveJobShift { JobId = "farmer", TargetName = "Wild Herbs & Mushrooms", TargetId = 83, RequiredCount = 20, RewardCoins = 70, RewardExp = 65 };
+                if (level < 17)
+                    return new ActiveJobShift { JobId = "farmer", TargetName = "Desert Cactus / Herbs", TargetId = 80, RequiredCount = 20, RewardCoins = 130, RewardExp = 120 };
+                if (level < 25)
+                    return new ActiveJobShift { JobId = "farmer", TargetName = "Glowing Mushrooms / Herbs", TargetId = 71, RequiredCount = 25, RewardCoins = 240, RewardExp = 210 };
+                if (level < 33)
+                    return new ActiveJobShift { JobId = "farmer", TargetName = "Mature Herbs Batch", TargetId = 83, RequiredCount = 30, RewardCoins = 420, RewardExp = 350 };
+                if (level < 41)
+                    return new ActiveJobShift { JobId = "farmer", TargetName = "Master Botanist Harvest", TargetId = 83, RequiredCount = 35, RewardCoins = 720, RewardExp = 570 };
+
+                return new ActiveJobShift { JobId = "farmer", TargetName = "Grand Botanical Harvest", TargetId = 83, RequiredCount = 40, RewardCoins = 1100, RewardExp = 880 };
+            }
+
+            // Default: lumberjack
+            if (level < 5)
+                return new ActiveJobShift { JobId = jobId, TargetName = "Wood Tree (Kayu)", TargetId = TileID.Trees, RequiredCount = 20, RewardCoins = 35, RewardExp = 35 };
+            if (level < 10)
+                return new ActiveJobShift { JobId = jobId, TargetName = "Forest / Snow Trees", TargetId = TileID.Trees, RequiredCount = 25, RewardCoins = 70, RewardExp = 65 };
+            if (level < 17)
+                return new ActiveJobShift { JobId = jobId, TargetName = "Jungle / Evil Trees", TargetId = TileID.Trees, RequiredCount = 30, RewardCoins = 130, RewardExp = 120 };
+            if (level < 25)
+                return new ActiveJobShift { JobId = jobId, TargetName = "Palm / Timber Trees", TargetId = TileID.Trees, RequiredCount = 35, RewardCoins = 240, RewardExp = 210 };
+            if (level < 33)
+                return new ActiveJobShift { JobId = jobId, TargetName = "Hardmode Timber", TargetId = TileID.Trees, RequiredCount = 40, RewardCoins = 420, RewardExp = 350 };
+            if (level < 41)
+                return new ActiveJobShift { JobId = jobId, TargetName = "Hallowed Timber", TargetId = TileID.Trees, RequiredCount = 45, RewardCoins = 700, RewardExp = 560 };
+
+            return new ActiveJobShift { JobId = jobId, TargetName = "Master Timber Harvest", TargetId = TileID.Trees, RequiredCount = 50, RewardCoins = 1050, RewardExp = 850 };
         }
     }
 

@@ -58,7 +58,7 @@ namespace Univers.MultiWorld
 
         // Tracking entitas di backend saat ini untuk pembersihan saat pindah world
         public readonly HashSet<byte> ActiveOtherPlayers = new();
-        public readonly Dictionary<short, byte> ActiveProjectiles = new();
+        public readonly HashSet<(short ProjId, byte Owner)> ActiveProjectiles = new();
         public readonly object EntityLock = new();
 
         public ProxySession(TcpClient client, string initialWorldId)
@@ -308,6 +308,7 @@ namespace Univers.MultiWorld
                 }
 
                 byte[] toClient = PrepareOutboundPacket(packet, session.BackendSlot, session.ClientSlot);
+                CacheServerSelfPacket(session, toClient);
                 bool sent = await SendPacketAsync(session.ClientStream, session.ClientWriteLock, toClient, ct);
                 if (!sent)
                 {
@@ -520,7 +521,6 @@ namespace Univers.MultiWorld
                     .Where(p => p != session.ClientSlot)
                     .ToList();
                 projsToClear = session.ActiveProjectiles
-                    .Select(kv => (kv.Key, kv.Value))
                     .ToList();
                 session.ActiveOtherPlayers.Clear();
                 session.ActiveProjectiles.Clear();
@@ -655,6 +655,39 @@ namespace Univers.MultiWorld
             }
         }
 
+        private static void CacheServerSelfPacket(ProxySession session, byte[] toClient)
+        {
+            if (toClient.Length < 4 || session.ClientSlot == 255) return;
+            byte msgId = toClient[2];
+            if (toClient[3] != session.ClientSlot) return;
+
+            lock (session.CacheLock)
+            {
+                switch (msgId)
+                {
+                    case 4:
+                        session.PlayerInfoPacket = (byte[])toClient.Clone();
+                        break;
+                    case 16:
+                        session.PlayerHpPacket = (byte[])toClient.Clone();
+                        break;
+                    case 42:
+                        session.PlayerManaPacket = (byte[])toClient.Clone();
+                        break;
+                    case 50:
+                        session.PlayerBuffPacket = (byte[])toClient.Clone();
+                        break;
+                    case 5:
+                        if (toClient.Length >= 6)
+                        {
+                            short slot = BinaryPrimitives.ReadInt16LittleEndian(toClient.AsSpan(4, 2));
+                            session.PlayerSlotPackets[slot] = (byte[])toClient.Clone();
+                        }
+                        break;
+                }
+            }
+        }
+
         private static void TrackBackendEntityPacket(ProxySession session, byte[] packet)
         {
             if (packet.Length < 4) return;
@@ -673,16 +706,17 @@ namespace Univers.MultiWorld
                         else session.ActiveOtherPlayers.Remove(mappedPid);
                     }
                 }
-                else if (msgId == 27 && packet.Length >= 22) // SyncProjectile
+                else if (msgId == 27 && packet.Length >= 28) // SyncProjectile ([3..4]=id, [5..12]=pos, [13..20]=vel, [21..24]=knockBack, [25..26]=damage, [27]=owner)
                 {
                     short projId = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(3, 2));
-                    byte owner = MapSlot(packet[21], session.BackendSlot, session.ClientSlot);
-                    session.ActiveProjectiles[projId] = owner;
+                    byte owner = MapSlot(packet[27], session.BackendSlot, session.ClientSlot);
+                    session.ActiveProjectiles.Add((projId, owner));
                 }
                 else if (msgId == 29 && packet.Length >= 6) // KillProjectile
                 {
                     short projId = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(3, 2));
-                    session.ActiveProjectiles.Remove(projId);
+                    byte owner = MapSlot(packet[5], session.BackendSlot, session.ClientSlot);
+                    session.ActiveProjectiles.Remove((projId, owner));
                 }
             }
         }
@@ -698,11 +732,11 @@ namespace Univers.MultiWorld
             int slotOffset = msgId switch
             {
                 4 or 5 or 12 or 13 or 14 or 16 or 30 or 35 or 36 or 40 or 41 or 42 or 43
-                or 50 or 51 or 54 or 55 or 58 or 62 or 66 or 80 or 96 or 99 or 102 or 117
-                or 118 or 120 or 121 or 124 or 128 or 134 or 135 or 140 or 147 => 3,
-                65 => 4, // Teleport (byte 3 = flags, byte 4 = player slot!)
+                or 45 or 50 or 51 or 55 or 58 or 62 or 66 or 80 or 96 or 99 or 102 or 117
+                or 118 or 120 or 121 or 124 or 125 or 128 or 134 or 135 or 139 or 147 => 3,
+                65 => (packet[3] & 3) != 1 ? 4 : -1, // Teleport: flag bits 0..1 == 1 adalah NPC teleport, bukan player
                 22 or 29 => 5,
-                27 => 21,
+                27 => 27, // SyncProjectile: owner byte ada di offset 27 (setelah identity, pos, vel, knockBack, damage)
                 _ => -1
             };
 

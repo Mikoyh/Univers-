@@ -183,6 +183,7 @@ namespace Univers.Survival
         {
             var player = TShock.Players[args.Who];
             if (player == null || !player.Active || !player.IsLoggedIn) return;
+            if (MultiWorldModule.IsPlayerTransferring(player)) return;
 
             if (!IsSurvivalActiveInCurrentWorld())
             {

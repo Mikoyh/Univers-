@@ -176,6 +176,17 @@ namespace Univers.Jobs
             var shift = profile.GetOrCreateShift(jobName);
 
             JobModule.Database.SaveProfile(profile);
+            try
+            {
+                var rankData = Skynomi.Ranks.RankModule.Database?.GetOrCreate(player.Account.Name);
+                if (rankData != null && !rankData.HasJobSelected)
+                {
+                    rankData.HasJobSelected = true;
+                    Skynomi.Ranks.RankModule.Database!.Update(rankData);
+                }
+            }
+            catch { }
+
             player.SendSuccessMessage($"[c/4ade80:Sukses!] Kamu resmi bergabung sebagai [c/f59e0b:{jobName.ToUpper()}]!");
             player.SendInfoMessage($"[c/38bdf8:Shift Pertamamu:] {shift.TargetName} ({shift.CurrentCount}/{shift.RequiredCount}x) | Upah: {JobModule.FormatCoinsShort(shift.RewardCoins)} + {shift.RewardExp} EXP.");
         }
@@ -193,7 +204,7 @@ namespace Univers.Jobs
             JobModule.Database.SaveProfile(profile);
 
             player.SendSuccessMessage($"[c/94a3b8:Kamu telah keluar dari pekerjaan {jobName.ToUpper()}.]");
-            player.SendWarningMessage($"[c/fbbf24:PERHATIAN: Kamu harus menunggu 30 menit cooldown sebelum dapat melamar pekerjaan baru!]");
+            player.SendWarningMessage($"[c/fbbf24:PERHATIAN: Kamu harus menunggu {JobModule.Config.LeaveJobCooldownMinutes} menit cooldown sebelum dapat melamar pekerjaan baru!]");
             player.SendInfoMessage("[c/94a3b8:Progres level dan akumulasi EXP pekerjaanmu tetap tersimpan aman di database.]");
         }
 

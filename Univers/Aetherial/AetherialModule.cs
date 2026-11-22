@@ -941,6 +941,8 @@ namespace Univers.Aetherial
                 }
             }
 
+            if (Univers.MultiWorld.MultiWorldModule.IsPlayerTransferring(player)) return;
+
             System.Threading.Tasks.Task.Delay(3000).ContinueWith(_ =>
             {
                 if (player == null || !player.Active || !player.IsLoggedIn) return;

@@ -174,6 +174,32 @@ namespace Univers.MultiWorld
                     _ = RunAdminAsync(player, "perm", args.Parameters.Skip(1).ToList());
                     break;
 
+                case "resetssc":
+                    if (!RequireAdmin(player)) return;
+                    {
+                        TSPlayer? targetPlayer = args.Parameters.Count >= 2
+                            ? TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(args.Parameters[1], StringComparison.OrdinalIgnoreCase))
+                            : (player.RealPlayer ? player : null);
+                        if (targetPlayer == null)
+                        {
+                            player.SendErrorMessage("Player tidak ditemukan atau sedang tidak online di world ini. Format: /mw resetssc [nama_player]");
+                            return;
+                        }
+                        if (MultiWorldModule.ResetOnlinePlayerSsc(targetPlayer, out string resetMsg))
+                        {
+                            player.SendSuccessMessage($"[MultiWorld] {resetMsg}");
+                            if (!ReferenceEquals(player, targetPlayer))
+                            {
+                                targetPlayer.SendInfoMessage("[MultiWorld] Data karakter SSC kamu telah di-reset oleh Admin ke karakter awal.");
+                            }
+                        }
+                        else
+                        {
+                            player.SendErrorMessage($"[MultiWorld] {resetMsg}");
+                        }
+                    }
+                    break;
+
                 case "help":
                     SendHelp(player);
                     break;
@@ -536,6 +562,7 @@ namespace Univers.MultiWorld
                 player.SendMessage("[Admin] /mw start <id> | /mw sleep <id> - Nyalakan / tidurkan world manual", Color.Yellow);
                 player.SendMessage("[Admin] /mw autosleep <id> <on|off|menit> - Atur Auto-Sleep saat world kosong", Color.Yellow);
                 player.SendMessage("[Admin] /mw perm <id> <permission|none> - Batasi akses masuk world", Color.Yellow);
+                player.SendMessage("[Admin] /mw resetssc [player] - Reset SSC player yang terlanjur tembus ke starter awal", Color.Yellow);
             }
         }
     }

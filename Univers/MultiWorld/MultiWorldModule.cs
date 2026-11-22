@@ -17,9 +17,11 @@ using System.Timers;
 using Microsoft.Xna.Framework;
 using Newtonsoft.Json;
 using Terraria;
+using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
 using TShockAPI.DB;
+using TShockAPI.Hooks;
 
 namespace Univers.MultiWorld
 {
@@ -108,6 +110,7 @@ namespace Univers.MultiWorld
             ServerApi.Hooks.NetGetData.Register(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Register(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Register(UniversPlugin.Instance, OnGamePostInitialize);
+            PlayerHooks.PlayerPostLogin += OnPlayerPostLogin;
 
             MultiWorldCommands.Register();
 
@@ -139,6 +142,8 @@ namespace Univers.MultiWorld
 
         private static void OnGamePostInitialize(EventArgs args)
         {
+            TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Status SSC ({CurrentWorldId}): {(Main.ServerSideCharacter ? "AKTIF (sscconfig.json Enabled=true)" : "NONAKTIF! Cek tshock/sscconfig.json")}");
+
             if (IsChildProcess)
             {
                 InitializeChildMode(CurrentWorldId);
@@ -146,6 +151,27 @@ namespace Univers.MultiWorld
             else
             {
                 InitializeMasterMode();
+            }
+        }
+
+        private static void OnPlayerPostLogin(PlayerPostLoginEventArgs e)
+        {
+            var player = e.Player;
+            if (player == null || !player.Active || !player.RealPlayer) return;
+
+            if (!Main.ServerSideCharacter)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] '{player.Name}' login saat ServerSideCharacter=FALSE (karakter lokal Terraria diizinkan masuk). Aktifkan Enabled=true di tshock/sscconfig.json!");
+                if (player.HasPermission("univers.mw.admin"))
+                {
+                    player.SendWarningMessage("[SSC Info] ServerSideCharacter saat ini NONAKTIF di sscconfig.json!");
+                }
+                return;
+            }
+
+            if (player.HasPermission("tshock.ignore.ssc"))
+            {
+                player.SendWarningMessage("[SSC Info] Akun/grup kamu punya izin 'tshock.ignore.ssc' (atau '*'), jadi TShock otomatis membiarkan karakter lokal Terraria kamu masuk!");
             }
         }
 
@@ -439,6 +465,7 @@ namespace Univers.MultiWorld
             ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Deregister(UniversPlugin.Instance, OnGamePostInitialize);
+            PlayerHooks.PlayerPostLogin -= OnPlayerPostLogin;
 
             _effectiveMasterHubPort = 0;
             _takenOverPublicPort = 0;
@@ -617,6 +644,13 @@ namespace Univers.MultiWorld
             TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
         }
 
+        public static bool IsPlayerTransferring(TSPlayer? player)
+        {
+            if (player == null || string.IsNullOrWhiteSpace(player.Name)) return false;
+            return (_recentTransfers.TryGetValue(player.Name, out var untilUtc) && DateTime.UtcNow <= untilUtc) ||
+                   _claimedTickets.ContainsKey(player.Name);
+        }
+
         private static void OnNetGreetPlayer(GreetPlayerEventArgs args)
         {
             var player = TShock.Players[args.Who];
@@ -629,7 +663,9 @@ namespace Univers.MultiWorld
             bool hasPendingClear = _pendingEntityClearPlayers.TryRemove(player.Name, out _);
             _claimedTickets.TryRemove(player.Name, out _);
 
-            if (Main.ServerSideCharacter && player.RealPlayer && _pendingSscRestores.ContainsKey(player.Name))
+            if (Main.ServerSideCharacter && player.RealPlayer &&
+                !player.HasPermission("tshock.ignore.ssc") &&
+                _pendingSscRestores.ContainsKey(player.Name))
             {
                 player.IgnoreSSCPackets = true;
             }
@@ -820,7 +856,20 @@ namespace Univers.MultiWorld
      {
          if (args.Handled) return;
          var player = TShock.Players[args.Msg.whoAmI];
-         if (player == null || !IsTransferLocked(player.Name)) return;
+         if (player == null) return;
+
+         if (Main.ServerSideCharacter && player.RealPlayer &&
+             !player.HasPermission("tshock.ignore.ssc") &&
+             (player.IgnoreSSCPackets || _pendingSscRestores.ContainsKey(player.Name)) &&
+             (args.MsgID == PacketTypes.PlayerSlot ||
+              args.MsgID == PacketTypes.PlayerHp ||
+              args.MsgID == PacketTypes.PlayerMana))
+         {
+             args.Handled = true;
+             return;
+         }
+
+         if (!IsTransferLocked(player.Name)) return;
 
          if (args.MsgID == PacketTypes.ItemDrop ||
              args.MsgID == PacketTypes.ChestGetContents ||
@@ -943,7 +992,7 @@ namespace Univers.MultiWorld
                 player.IsLoggedIn = true;
 
                 // Lindungi SSC dari paket handshake replay (Packet 5/16/42) dan jadwalkan restore SETELAH CompleteConnection (49)
-                if (Main.ServerSideCharacter && player.RealPlayer)
+                if (Main.ServerSideCharacter && player.RealPlayer && !player.HasPermission("tshock.ignore.ssc"))
                 {
                     player.IgnoreSSCPackets = true;
                     if (!string.IsNullOrWhiteSpace(ticket.SscSnapshotJson) || !_pendingSscRestores.ContainsKey(player.Name))
@@ -1128,8 +1177,12 @@ namespace Univers.MultiWorld
                             NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, player.Index);
                             for (int i = 0; i < 59; i++)
                             {
-                                NetMessage.SendData((int)PacketTypes.PlayerSlot, player.Index, -1, null, player.Index, i);
+                                NetMessage.SendData((int)PacketTypes.PlayerSlot, -1, -1, null, player.Index, i);
                             }
+                        }
+                        if (tp.selectedItem >= 0 && tp.selectedItem < 59)
+                        {
+                            NetMessage.SendData((int)PacketTypes.PlayerSlot, -1, -1, null, player.Index, tp.selectedItem);
                         }
                         return;
                     }
@@ -1184,6 +1237,94 @@ namespace Univers.MultiWorld
                 {
                     System.Threading.Thread.Sleep(25);
                 }
+            }
+        }
+
+        public static bool ResetOnlinePlayerSsc(TSPlayer target, out string message)
+        {
+            if (target == null || !target.Active || !target.RealPlayer || target.TPlayer == null)
+            {
+                message = "Player harus online di dalam game.";
+                return false;
+            }
+            if (!Main.ServerSideCharacter)
+            {
+                message = "ServerSideCharacter sedang nonaktif di sscconfig.json.";
+                return false;
+            }
+            if (!target.IsLoggedIn || target.Account == null)
+            {
+                message = $"Player '{target.Name}' belum login ke akun TShock.";
+                return false;
+            }
+
+            try
+            {
+                var tp = target.TPlayer;
+                tp.statLifeMax = 100;
+                tp.statLife = 100;
+                tp.statManaMax = 20;
+                tp.statMana = 20;
+                tp.extraAccessory = false;
+                tp.unlockedBiomeTorches = false;
+                tp.anglerQuestsFinished = 0;
+
+                static void ClearItems(Item[]? arr)
+                {
+                    if (arr == null) return;
+                    for (int i = 0; i < arr.Length; i++)
+                    {
+                        if (arr[i] == null) arr[i] = new Item();
+                        arr[i].SetDefaults(0);
+                        arr[i].stack = 0;
+                        arr[i].prefix = 0;
+                    }
+                }
+
+                ClearItems(tp.inventory);
+                ClearItems(tp.armor);
+                ClearItems(tp.dye);
+                ClearItems(tp.miscEquips);
+                ClearItems(tp.miscDyes);
+                ClearItems(tp.bank?.item);
+                ClearItems(tp.bank2?.item);
+                ClearItems(tp.bank3?.item);
+                ClearItems(tp.bank4?.item);
+
+                if (tp.inventory != null && tp.inventory.Length >= 3)
+                {
+                    tp.inventory[0].SetDefaults(ItemID.CopperShortsword);
+                    tp.inventory[0].stack = 1;
+                    tp.inventory[1].SetDefaults(ItemID.CopperPickaxe);
+                    tp.inventory[1].stack = 1;
+                    tp.inventory[2].SetDefaults(ItemID.CopperAxe);
+                    tp.inventory[2].stack = 1;
+                }
+
+                target.PlayerData ??= GetPlayerDataWithRetry(target, target.Account.ID);
+                if (target.PlayerData != null)
+                {
+                    target.PlayerData.CopyCharacter(target);
+                    target.PlayerData.RestoreCharacter(target);
+                    InsertPlayerDataWithRetry(target);
+                }
+                else
+                {
+                    NetMessage.SendData((int)PacketTypes.PlayerHp, -1, -1, null, target.Index);
+                    NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, target.Index);
+                    for (int i = 0; i < 59; i++)
+                    {
+                        NetMessage.SendData((int)PacketTypes.PlayerSlot, target.Index, -1, null, target.Index, i);
+                    }
+                }
+
+                message = $"SSC '{target.Name}' berhasil di-reset ke karakter awal (100 HP, 20 Mana, Copper Tools) & disimpan ke DB.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Gagal reset SSC '{target.Name}': {ex.Message}";
+                return false;
             }
         }
 

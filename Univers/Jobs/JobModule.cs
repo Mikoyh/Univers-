@@ -80,6 +80,7 @@ namespace Univers.Jobs
         {  
             var player = TShock.Players[args.Who];  
             if (player == null || !player.Active) return;  
+            if (Univers.MultiWorld.MultiWorldModule.IsPlayerTransferring(player)) return;  
 
             System.Threading.Tasks.Task.Delay(3500).ContinueWith(_ =>  
             {  
@@ -241,7 +242,8 @@ namespace Univers.Jobs
                 long finalExp = shift.RewardExp;
 
                 int currentJobLvl = profile.GetJobLevel(jobId);
-                double multiplier = 1.0 + (currentJobLvl - 1) * 0.025;
+                double bonusPct = Math.Clamp(Config.LevelBonusPercent, 0.0, 5.0);
+                double multiplier = 1.0 + Math.Max(0, currentJobLvl - 1) * (bonusPct / 100.0);
 
                 finalCoins = (long)Math.Max(1, Math.Round(finalCoins * multiplier));
                 finalExp = (long)Math.Max(1, Math.Round(finalExp * multiplier));
@@ -260,28 +262,75 @@ namespace Univers.Jobs
 
                 EconomyApi.TryCredit(player.Account.Name, finalCoins, $"Job Shift: {jobId}");
 
-                DateTime cooldownEnd = DateTime.UtcNow.AddMinutes(Config.TaskCooldownMinutes);
+                try
+                {
+                    var rankData = RankModule.Database?.GetOrCreate(player.Account.Name);
+                    if (rankData != null)
+                    {
+                        rankData.HasJobSelected = true;
+                        rankData.JobsCompleted++;
+                        RankModule.Database!.Update(rankData);
+                    }
+                }
+                catch { }
+
+                int cooldownSeconds = GetEffectiveShiftCooldownSeconds(player);
+                DateTime cooldownEnd = cooldownSeconds > 0
+                    ? DateTime.UtcNow.AddSeconds(cooldownSeconds)
+                    : DateTime.MinValue;
                 profile.RollNextShift(jobId, newJobLevel);
 
                 var nextShift = profile.GetOrCreateShift(jobId);
                 nextShift.ShiftCooldownUntil = cooldownEnd;
-                nextShift.NeedsCooldownAlert = true;
+                nextShift.NeedsCooldownAlert = cooldownSeconds > 0;
 
                 Database.SaveProfile(profile);
 
                 player.SendSuccessMessage($"[i:73] [c/4ade80:=== SHIFT SELESAI! ===]");
                 player.SendSuccessMessage($"Kamu menyelesaikan kuota {shift.RequiredCount}x {shift.TargetName}!");
-                player.SendSuccessMessage($"[c/fbbf24:Gaji Diterima:] {finalCoins} Shard | [c/38bdf8:EXP:] +{finalExp} EXP");
-                player.SendInfoMessage($"[c/94a3b8:Shift istirahat selama {Config.TaskCooldownMinutes} menit. Kamu akan diberi tahu di chat begitu shift berikutnya siap!]");
+                player.SendSuccessMessage($"[c/fbbf24:Gaji Diterima:] {finalCoins:N0} Shard | [c/38bdf8:EXP:] +{finalExp:N0} EXP");
+                if (cooldownSeconds > 0)
+                {
+                    int cdMins = cooldownSeconds / 60;
+                    int cdSecs = cooldownSeconds % 60;
+                    string cdLabel = cdSecs > 0 ? $"{cdMins}m {cdSecs}s" : $"{cdMins} menit";
+                    player.SendInfoMessage($"[c/94a3b8:Shift istirahat selama {cdLabel}. Kamu akan diberi tahu di chat begitu shift berikutnya siap!]");
+                }
+                else
+                {
+                    player.SendInfoMessage("[c/4ade80:Bonus Kasta Univers: Shift berikutnya langsung siap tanpa cooldown!]");
+                }
 
-                ShowCombatText(player, finalCoins, jobId);
+                if (Config.EnableCombatTextFeedback)
+                {
+                    ShowCombatText(player, finalCoins, jobId);
+                }
+
+                JobApi.InvokeShiftCompleted(player, jobId, newJobLevel);
 
                 if (leveledUp)
                 {
+                    JobApi.InvokeLevelUp(player, jobId, newJobLevel);
                     player.SendSuccessMessage($"[i:273] [c/f59e0b:SELAMAT!] Karir [c/38bdf8:{jobId.ToUpper()}] kamu naik ke Level {newJobLevel}!");
-                    player.SendInfoMessage($"[c/a3e635:+ Misi tingkat berikutnya terbuka & bonus gaji naik menjadi +{(newJobLevel - 1) * 2.5:0.#}%!]");
+                    player.SendInfoMessage($"[c/a3e635:+ Misi tingkat berikutnya terbuka & bonus gaji naik menjadi +{(newJobLevel - 1) * bonusPct:0.#}%!]");
                 }
             }
+        }
+
+        private static int GetEffectiveShiftCooldownSeconds(TSPlayer player)
+        {
+            int baseSeconds = Math.Max(60, Config.TaskCooldownMinutes * 60);
+            int rankIndex = 0;
+            try
+            {
+                rankIndex = RankApi.GetRankIndex(player);
+            }
+            catch { }
+
+            if (rankIndex >= 8) return 0; // Univers: Instant Job Delay 0m
+            if (rankIndex >= 6) return Math.Max(30, baseSeconds / 2); // Astral/Cosmic: -50%
+            if (rankIndex >= 2) return Math.Max(30, baseSeconds - 30); // Transcendant+: -30s
+            return baseSeconds;
         }
 
         private static bool IsTargetMatching(string jobId, int expectedId, int actualId)
@@ -294,8 +343,29 @@ namespace Univers.Jobs
                 if (expectedId == TileID.Iron && actualId == TileID.Lead) return true;
                 if (expectedId == TileID.Silver && actualId == TileID.Tungsten) return true;
                 if (expectedId == TileID.Gold && actualId == TileID.Platinum) return true;
+                if (expectedId == TileID.Hellstone && (actualId == TileID.Cobalt || actualId == TileID.Palladium)) return true;
                 if (expectedId == TileID.Demonite && actualId == TileID.Crimtane) return true;
                 if (expectedId == TileID.Cobalt && actualId == TileID.Palladium) return true;
+            }
+
+            if (jobId == "lumberjack")
+            {
+                return actualId == TileID.Trees ||
+                       actualId == 323 || // PalmTree
+                       actualId == 72 ||  // MushroomTrees
+                       actualId == 596 || // VanityTreeSakura
+                       actualId == 616 || // VanityTreeYellowWillow
+                       actualId == 634;   // TreeAsh
+            }
+
+            if (jobId == "farmer")
+            {
+                return actualId == 82 || // ImmatureHerbs
+                       actualId == 83 || // MatureHerbs
+                       actualId == 84 || // BloomingHerbs
+                       actualId == 71 || // Mushrooms
+                       actualId == 80 || // Cactus
+                       actualId == 3;    // Wild Plants / Flowers
             }
 
             if (jobId == "hunter")

@@ -14,6 +14,15 @@ namespace Univers.Jobs
         public static event Action<TSPlayer, string, int>? OnJobShiftCompleted;
         public static event Action<TSPlayer, string, int>? OnJobLevelUp;
 
+        internal static void InvokeShiftCompleted(TSPlayer player, string jobId, int jobLevel)
+        {
+            OnJobShiftCompleted?.Invoke(player, jobId, jobLevel);
+        }
+
+        internal static void InvokeLevelUp(TSPlayer player, string jobId, int newLevel)
+        {
+            OnJobLevelUp?.Invoke(player, jobId, newLevel);
+        }
 
         public static bool IsPlayerWorking(TSPlayer player, string jobId)
         {
