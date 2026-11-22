@@ -343,33 +343,42 @@ namespace Univers.MultiWorld
 
         #region Cross-World Chat & Presence Indicators
 
-        public static void HandleLocalFormattedChat(TSPlayer sender, string formattedChat)
-        {
-            // Pemain di world yang SAMA melihat chat bersih tanpa prefix [RTP]/[LOBBY]
-            BroadcastLocalFormatted(formattedChat, Color.White);
+     public static void HandleLocalFormattedChat(TSPlayer sender, string formattedChat)
+     {
+         BroadcastLocalFormatted(formattedChat, Color.White);
 
-            if (!Config.CrossWorldChat) return;
+         // Jika di Master Hub (lobby), cetak chat bersih ke console
+         if (!IsChildProcess)
+         {
+             TShock.Log.ConsoleInfo($"[Chat:{CurrentWorldId}] {StripTerrariaColorTags(formattedChat)}");
+         }
 
-            // Pemain di world LAIN melihat prefix asal world-nya
-            string badge = FormatWorldChatBadge(CurrentWorldId);
-            string crossWorldMessage = $"{badge} {formattedChat}";
+         if (!Config.CrossWorldChat) return;
 
-            if (IsChildProcess)
-            {
-                _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
-                {
-                    Action = "relay_chat",
-                    WorldId = CurrentWorldId,
-                    PlayerName = sender.Name,
-                    FormattedMessage = crossWorldMessage
-                });
-            }
-            else
-            {
-                _ = PushMessageToOtherChildrenAsync(CurrentWorldId, "push_chat", crossWorldMessage, 255, 255, 255);
-            }
-        }
+         string badge = FormatWorldChatBadge(CurrentWorldId);
+         string crossWorldMessage = $"{badge} {formattedChat}";
 
+         if (IsChildProcess)
+         {
+             _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+             {
+                 Action = "relay_chat",
+                 WorldId = CurrentWorldId,
+                 PlayerName = sender.Name,
+                 FormattedMessage = crossWorldMessage
+             });
+         }
+         else
+         {
+             _ = PushMessageToOtherChildrenAsync(CurrentWorldId, "push_chat", crossWorldMessage, 255, 255, 255);
+         }
+     }
+
+             private static string StripTerrariaColorTags(string text)
+     {
+         if (string.IsNullOrEmpty(text)) return string.Empty;
+         return System.Text.RegularExpressions.Regex.Replace(text, @"\[c/[0-9a-fA-F]{6}:([^\]]*)\]", "$1");
+     }
 
         private static void BroadcastLocalFormatted(string message, Color color)
         {
@@ -1045,7 +1054,7 @@ namespace Univers.MultiWorld
                      if (Config.CrossWorldChat && !string.IsNullOrWhiteSpace(req.FormattedMessage))
                      {
                          string msg = req.FormattedMessage;
-                         TShock.Log.ConsoleInfo($"[Chat:{req.WorldId}] {req.PlayerName}: {msg}");
+                         TShock.Log.ConsoleInfo($"[Chat:{req.WorldId}] {StripTerrariaColorTags(msg)}");
                          _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(msg, Color.White));
                          await PushMessageToOtherChildrenAsync(req.WorldId, "push_chat", msg, 255, 255, 255);
                      }

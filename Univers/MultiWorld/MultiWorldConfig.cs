@@ -229,8 +229,8 @@ namespace Univers.MultiWorld
                     Size = "medium",
                     Difficulty = "classic",
                     Evil = "random",
-                    AutoStart = false,
-                    AutoSleep = true,
+                    AutoStart = true,
+                    AutoSleep = false,
                     EmptyShutdownMinutes = -1
                 });
             }
