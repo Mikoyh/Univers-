@@ -453,10 +453,17 @@ namespace Univers.MultiWorld
                     byte[] mapped = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
                     await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mapped, session.Cts.Token);
 
-                    if (srvId == 7 && !sentTileRequest) // WorldInfo -> minta section spawn!
+                    if (srvId == 7 && !sentTileRequest) // WorldInfo -> baca koordinat spawn asli & minta section spawn!
                     {
                         sentTileRequest = true;
-                        byte[] reqTiles = BuildRequestEssentialTilesPacket(session, -1, -1);
+                        int targetSpawnX = -1;
+                        int targetSpawnY = -1;
+                        if (srvPkt.Length >= 23)
+                        {
+                            targetSpawnX = BinaryPrimitives.ReadInt32LittleEndian(srvPkt.AsSpan(15, 4));
+                            targetSpawnY = BinaryPrimitives.ReadInt32LittleEndian(srvPkt.AsSpan(19, 4));
+                        }
+                        byte[] reqTiles = BuildRequestEssentialTilesPacket(session, targetSpawnX, targetSpawnY);
                         await SendPacketAsync(newStream, session.BackendWriteLock, reqTiles, session.Cts.Token);
                     }
                 }
