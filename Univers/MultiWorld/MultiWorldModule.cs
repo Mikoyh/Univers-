@@ -542,10 +542,10 @@ namespace Univers.MultiWorld
                     int maxSecY = Math.Max(1, Main.maxTilesY / 150);
                     int centerSx = Math.Clamp(spawnX / 200, 0, maxSecX - 1);
                     int centerSy = Math.Clamp(spawnY / 150, 0, maxSecY - 1);
-                    int minSx = Math.Max(0, centerSx - 4);
-                    int maxSx = Math.Min(maxSecX - 1, centerSx + 4);
-                    int minSy = Math.Max(0, centerSy - 3);
-                    int maxSy = Math.Min(maxSecY - 1, centerSy + 3);
+                    int minSx = Math.Max(0, centerSx - 1);
+                    int maxSx = Math.Min(maxSecX - 1, centerSx + 1);
+                    int minSy = Math.Max(0, centerSy - 1);
+                    int maxSy = Math.Min(maxSecY - 1, centerSy + 1);
 
                     for (int sx = minSx; sx <= maxSx; sx++)
                     {
@@ -585,7 +585,7 @@ namespace Univers.MultiWorld
                 });
             });
         }
-
+                                                   
         private static async Task SendCrossWorldRosterGreetingAsync(TSPlayer player)
         {
             try
