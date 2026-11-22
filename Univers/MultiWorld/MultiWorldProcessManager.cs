@@ -778,10 +778,11 @@ namespace Univers.MultiWorld
         {
             try
             {
+                string masterSavePath = UniversPlugin.GetEffectiveSavePath();
                 string targetCfgPath = Path.Combine(cfgDir, "config.json");
                 string sourcePath = File.Exists(targetCfgPath)
                     ? targetCfgPath
-                    : Path.Combine(UniversPlugin.GetEffectiveSavePath(), "config.json");
+                    : Path.Combine(masterSavePath, "config.json");
 
                 JObject root;
                 if (File.Exists(sourcePath))
@@ -808,11 +809,45 @@ namespace Univers.MultiWorld
 
                 File.WriteAllText(targetCfgPath, root.ToString(Formatting.Indented));
 
+                // Selalu sinkronkan sscconfig.json dari Master Hub
                 string targetSscPath = Path.Combine(cfgDir, "sscconfig.json");
-                string masterSscPath = Path.Combine(UniversPlugin.GetEffectiveSavePath(), "sscconfig.json");
-                if (!File.Exists(targetSscPath) && File.Exists(masterSscPath))
+                string masterSscPath = Path.Combine(masterSavePath, "sscconfig.json");
+                if (File.Exists(masterSscPath))
                 {
-                    File.Copy(masterSscPath, targetSscPath, overwrite: false);
+                    File.Copy(masterSscPath, targetSscPath, overwrite: true);
+                }
+
+                // Tautkan tshock.sqlite Master ke Child agar SSC Inventory, Akun, & Rank 100% sinkron
+                string masterDbPath = Path.Combine(masterSavePath, "tshock.sqlite");
+                string childDbPath = Path.Combine(cfgDir, "tshock.sqlite");
+                if (File.Exists(masterDbPath))
+                {
+                    try
+                    {
+                        if (File.Exists(childDbPath))
+                        {
+                            var attr = File.GetAttributes(childDbPath);
+                            if (!attr.HasFlag(FileAttributes.ReparsePoint))
+                            {
+                                File.Delete(childDbPath);
+                            }
+                        }
+
+                        if (!File.Exists(childDbPath) && OperatingSystem.IsWindows())
+                        {
+                            var mk = Process.Start(new ProcessStartInfo
+                            {
+                                FileName = "cmd.exe",
+                                Arguments = $"/c mklink /H \"{childDbPath}\" \"{masterDbPath}\"",
+                                CreateNoWindow = true,
+                                UseShellExecute = false,
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true
+                            });
+                            mk?.WaitForExit(3000);
+                        }
+                    }
+                    catch { }
                 }
             }
             catch (Exception ex)
@@ -820,6 +855,7 @@ namespace Univers.MultiWorld
                 TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menyiapkan config child: {ex.Message}");
             }
         }
+
 
         private static void EnsureChildServerPluginsLink(string instDir)
         {
