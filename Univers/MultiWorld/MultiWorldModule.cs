@@ -46,6 +46,30 @@ namespace Univers.MultiWorld
         private static readonly ConcurrentDictionary<string, byte> _pendingEntityClearPlayers = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _recentTransfers = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, (WorldTransferTicket Ticket, DateTime ExpiresUtc)> _claimedTickets = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, DateTime> _transferLockedPlayers = new(StringComparer.OrdinalIgnoreCase);
+
+        public static void SetTransferLock(string playerName, int seconds)
+        {
+            if (string.IsNullOrWhiteSpace(playerName)) return;
+            _transferLockedPlayers[playerName] = DateTime.UtcNow.AddSeconds(seconds);
+        }
+
+        public static void ClearTransferLock(string playerName)
+        {
+            if (string.IsNullOrWhiteSpace(playerName)) return;
+            _transferLockedPlayers.TryRemove(playerName, out _);
+        }
+
+        public static bool IsTransferLocked(string playerName)
+        {
+            if (string.IsNullOrWhiteSpace(playerName)) return false;
+            if (_transferLockedPlayers.TryGetValue(playerName, out var until))
+            {
+                if (DateTime.UtcNow <= until) return true;
+                _transferLockedPlayers.TryRemove(playerName, out _);
+            }
+            return false;
+        }
 
         public static void Initialize(string tshockSavePath)
         {
@@ -76,6 +100,7 @@ namespace Univers.MultiWorld
             ServerApi.Hooks.ServerJoin.Register(UniversPlugin.Instance, OnServerJoin);
             ServerApi.Hooks.NetGreetPlayer.Register(UniversPlugin.Instance, OnNetGreetPlayer);
             ServerApi.Hooks.ServerLeave.Register(UniversPlugin.Instance, OnServerLeave);
+            ServerApi.Hooks.NetGetData.Register(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Register(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Register(UniversPlugin.Instance, OnGamePostInitialize);
 
@@ -278,6 +303,7 @@ namespace Univers.MultiWorld
             ServerApi.Hooks.ServerJoin.Deregister(UniversPlugin.Instance, OnServerJoin);
             ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnNetGreetPlayer);
             ServerApi.Hooks.ServerLeave.Deregister(UniversPlugin.Instance, OnServerLeave);
+            ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Deregister(UniversPlugin.Instance, OnGamePostInitialize);
 
@@ -488,9 +514,17 @@ namespace Univers.MultiWorld
             var p = TShock.Players[who];
             if (p == null || !p.Active || !p.RealPlayer) return;
 
-            float spawnPx = Main.spawnTileX * 16f;
-            float spawnPy = Math.Max(10, Main.spawnTileY - 3) * 16f;
-            p.Teleport(spawnPx, spawnPy);
+         int spawnX = Main.spawnTileX;
+         int spawnY = Main.spawnTileY;
+         while (spawnY > 20 && Main.tile[spawnX, spawnY - 1] != null &&
+                Main.tile[spawnX, spawnY - 1].active() && Main.tileSolid[Main.tile[spawnX, spawnY - 1].type])
+         {
+             spawnY--;
+         }
+
+         float spawnPx = spawnX * 16f;
+         float spawnPy = Math.Max(10, spawnY - 3) * 16f;
+         p.Teleport(spawnPx, spawnPy);
 
             try
             {
@@ -591,6 +625,21 @@ namespace Univers.MultiWorld
                 });
             }
         }
+
+    private static void OnNetGetData(GetDataEventArgs args)
+     {
+         if (args.Handled) return;
+         var player = TShock.Players[args.Msg.whoAmI];
+         if (player == null || !IsTransferLocked(player.Name)) return;
+
+         if (args.MsgID == PacketTypes.ItemDrop ||
+             args.MsgID == PacketTypes.ChestGetContents ||
+             args.MsgID == PacketTypes.ChestItem ||
+             args.MsgID == PacketTypes.PlayerSlot)
+         {
+             args.Handled = true;
+         }
+     }
 
         private static void OnGameUpdate(EventArgs args)
         {
@@ -698,6 +747,21 @@ namespace Univers.MultiWorld
 
                 player.Account = account;
                 player.IsLoggedIn = true;
+
+                // Muat ulang inventory terbaru dari database SSC agar sinkron lintas world
+                if (Main.ServerSideCharacter && player.RealPlayer)
+                {
+                    try
+                    {
+                        var latestData = TShock.CharacterDB.GetPlayerData(player, account.ID);
+                        if (latestData != null)
+                        {
+                            player.PlayerData = latestData;
+                            latestData.RestoreCharacter(player);
+                        }
+                    }
+                    catch { }
+                }
 
                 // Pastikan SSC & TShock mengenali player sudah terautentikasi penuh (bisa /i, /spawn, & blok jatuh)
                 if (Main.ServerSideCharacter && player.PlayerData != null)
@@ -848,6 +912,17 @@ namespace Univers.MultiWorld
             string uuid,
             string targetWorldId)
         {
+            // Paksa simpan inventory & status SSC terbaru sebelum pindah world agar tidak rollback
+            if (requester != null && requester.RealPlayer && Main.ServerSideCharacter && requester.IsLoggedIn)
+            {
+                try
+                {
+                    requester.PlayerData?.CopyCharacter(requester);
+                    TShock.CharacterDB.InsertPlayerData(requester);
+                }
+                catch { }
+            }
+
             ExtractGroupPermissions(groupName, requester, out bool hasWildcard, out string groupPerms);
 
             if (IsChildProcess)
@@ -966,14 +1041,15 @@ namespace Univers.MultiWorld
                             Worlds = ProcessManager?.GetWorldSnapshots(GetLocalActivePlayerNames()) ?? new List<WorldStatusSnapshot>()
                         };
 
-                    case "relay_chat":
-                        if (Config.CrossWorldChat && !string.IsNullOrWhiteSpace(req.FormattedMessage))
-                        {
-                            string msg = req.FormattedMessage;
-                            _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(msg, Color.White));
-                            await PushMessageToOtherChildrenAsync(req.WorldId, "push_chat", msg, 255, 255, 255);
-                        }
-                        return new IpcResponse { Success = true };
+                 case "relay_chat":
+                     if (Config.CrossWorldChat && !string.IsNullOrWhiteSpace(req.FormattedMessage))
+                     {
+                         string msg = req.FormattedMessage;
+                         TShock.Log.ConsoleInfo($"[Chat:{req.WorldId}] {req.PlayerName}: {msg}");
+                         _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(msg, Color.White));
+                         await PushMessageToOtherChildrenAsync(req.WorldId, "push_chat", msg, 255, 255, 255);
+                     }
+                     return new IpcResponse { Success = true };
 
                     case "presence_event":
                         await HandleMasterPresenceEventAsync(req.AdminSubAction, req.PlayerName, req.WorldId);

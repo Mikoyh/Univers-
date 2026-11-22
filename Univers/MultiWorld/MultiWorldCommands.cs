@@ -339,6 +339,7 @@ namespace Univers.MultiWorld
             try
             {
                 int warmupSeconds = 5;
+                MultiWorldModule.SetTransferLock(player.Name, warmupSeconds + 5);
                 Vector2 startPos = player.TPlayer.position;
                 player.SendInfoMessage($"[MultiWorld] Teleport ke '{target.DisplayName}' dalam {warmupSeconds} detik. JANGAN BERGERAK!");
 
@@ -376,10 +377,14 @@ namespace Univers.MultiWorld
                     player.SendErrorMessage($"[MultiWorld] {msg}");
                 }
             }
+            
             finally
             {
+                MultiWorldModule.ClearTransferLock(player.Name);
                 _pendingTeleports.TryRemove(player.Name, out _);
             }
+
+
         }
 
         private static readonly ConcurrentDictionary<string, DateTime> _worldSwitchCooldowns = new(StringComparer.OrdinalIgnoreCase);

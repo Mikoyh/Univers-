@@ -432,6 +432,7 @@ namespace Univers.MultiWorld
 
                 if (rt.IpcRegistered && IsTcpPortListening(def.Port))
                 {
+                    await Task.Delay(1500); // Tunggu TShock & map selesai inisialisasi penuh sebelum player masuk
                     DateTime readyNow = DateTime.UtcNow;
                     rt.State = WorldRuntimeState.Running;
                     rt.OnlineSinceUtc = readyNow;
@@ -784,15 +785,9 @@ namespace Univers.MultiWorld
                     ? targetCfgPath
                     : Path.Combine(masterSavePath, "config.json");
 
-                JObject root;
-                if (File.Exists(sourcePath))
-                {
-                    root = JObject.Parse(File.ReadAllText(sourcePath));
-                }
-                else
-                {
-                    root = new JObject { ["Settings"] = new JObject() };
-                }
+                JObject root = File.Exists(sourcePath)
+                    ? JObject.Parse(File.ReadAllText(sourcePath))
+                    : new JObject { ["Settings"] = new JObject() };
 
                 if (root["Settings"] is not JObject settings)
                 {
@@ -809,7 +804,7 @@ namespace Univers.MultiWorld
 
                 File.WriteAllText(targetCfgPath, root.ToString(Formatting.Indented));
 
-                // Selalu sinkronkan sscconfig.json dari Master Hub
+                // Sinkronkan sscconfig.json dari Master
                 string targetSscPath = Path.Combine(cfgDir, "sscconfig.json");
                 string masterSscPath = Path.Combine(masterSavePath, "sscconfig.json");
                 if (File.Exists(masterSscPath))
@@ -817,7 +812,7 @@ namespace Univers.MultiWorld
                     File.Copy(masterSscPath, targetSscPath, overwrite: true);
                 }
 
-                // Tautkan tshock.sqlite Master ke Child agar SSC Inventory, Akun, & Rank 100% sinkron
+                // Tautkan tshock.sqlite Master ke Child dengan hardlink agar SSC Inventory sinkron real-time
                 string masterDbPath = Path.Combine(masterSavePath, "tshock.sqlite");
                 string childDbPath = Path.Combine(cfgDir, "tshock.sqlite");
                 if (File.Exists(masterDbPath))
@@ -826,14 +821,10 @@ namespace Univers.MultiWorld
                     {
                         if (File.Exists(childDbPath))
                         {
-                            var attr = File.GetAttributes(childDbPath);
-                            if (!attr.HasFlag(FileAttributes.ReparsePoint))
-                            {
-                                File.Delete(childDbPath);
-                            }
+                            File.Delete(childDbPath);
                         }
 
-                        if (!File.Exists(childDbPath) && OperatingSystem.IsWindows())
+                        if (OperatingSystem.IsWindows())
                         {
                             var mk = Process.Start(new ProcessStartInfo
                             {
@@ -846,6 +837,11 @@ namespace Univers.MultiWorld
                             });
                             mk?.WaitForExit(3000);
                         }
+
+                        if (!File.Exists(childDbPath))
+                        {
+                            File.Copy(masterDbPath, childDbPath, overwrite: true);
+                        }
                     }
                     catch { }
                 }
@@ -855,7 +851,6 @@ namespace Univers.MultiWorld
                 TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menyiapkan config child: {ex.Message}");
             }
         }
-
 
         private static void EnsureChildServerPluginsLink(string instDir)
         {
