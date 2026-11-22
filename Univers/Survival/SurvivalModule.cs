@@ -172,9 +172,9 @@ namespace Univers.Survival
             for (short s = 0; s < inv.Length; s++)
             {
                 var it = inv[s];
-                if (it != null && it.netID > 0 && it.stack > 0 && SurvivalFoodRegistry.TryGetFoodNutrition(it.netID, out _))
+                if (it != null && it.type > 0 && it.stack > 0 && SurvivalFoodRegistry.TryGetFoodNutrition(it.type, out _))
                 {
-                    st.TrackedFoodSlots[s] = (it.netID, it.stack);
+                    st.TrackedFoodSlots[s] = (it.type, it.stack);
                 }
             }
         }
@@ -201,7 +201,7 @@ namespace Univers.Survival
             player.SendMessage(
                 $"[ SURVIVAL ] Mode Don't Starve AKTIF di '{MultiWorldModule.CurrentWorldId}'! Hunger: {st.Profile.Hunger:0}% | Sanity: {st.Profile.Sanity:0}% | Suhu: {st.Profile.Temperature:0.0}C",
                 Color.Gold);
-            player.SendInfoMessage("[ SURVIVAL ] Ketik /survival untuk cek detail bar, atau /shud untuk HUD layar.");
+            player.SendInfoMessage("[ SURVIVAL ] Ketik /status untuk cek detail bar, atau /shud untuk HUD layar.");
         }
 
         private static void OnServerLeave(LeaveEventArgs args)
@@ -514,7 +514,7 @@ namespace Univers.Survival
 
             if (st.NearCampfire) sanityDelta += Config.CampfireSanityRegenPerSecond;
             if (HasTileOrBuffBed(st)) sanityDelta += Config.BedSanityRegenPerSecond;
-            if (tp.HasBuff(BuffID.Sunflower)) sanityDelta += Config.SunflowerSanityRegenPerSecond;
+            if (HasPlayerBuff(tp, BuffID.Sunflower)) sanityDelta += Config.SunflowerSanityRegenPerSecond;
             if (!st.InTotalDarkness && Main.dayTime && ty <= Main.worldSurface && !Main.raining && !nearBoss)
             {
                 sanityDelta += Config.DaylightSanityRegenPerSecond;
@@ -581,11 +581,11 @@ namespace Univers.Survival
 
             // Cek personal light source (torch di tangan, Mining Helmet, Shine Potion, Light Pet)
             var tp = player.TPlayer;
-            int heldType = player.SelectedItem?.netID ?? 0;
+            int heldType = player.SelectedItem?.type ?? 0;
             bool holdingTorchOrGlow = heldType > 0 && heldType < ItemID.Sets.Torches.Length && ItemID.Sets.Torches[heldType];
             bool hasLightArmor = tp.armor[0] != null &&
                                  (tp.armor[0].type == ItemID.MiningHelmet || tp.armor[0].type == ItemID.UltrabrightHelmet);
-            bool hasLightBuff = tp.HasBuff(BuffID.Shine) || tp.HasBuff(BuffID.Campfire);
+            bool hasLightBuff = HasPlayerBuff(tp, BuffID.Shine) || HasPlayerBuff(tp, BuffID.Campfire);
 
             bool hasLight = nearLight || holdingTorchOrGlow || hasLightArmor || hasLightBuff;
 
@@ -663,11 +663,11 @@ namespace Univers.Survival
             if (tp.lavaWet) temp += 28.0;
 
             // Perlindungan potion / armor
-            if (tp.HasBuff(BuffID.Warmth) && temp < 14.0)
+            if (HasPlayerBuff(tp, BuffID.Warmth) && temp < 14.0)
             {
                 temp = 14.0;
             }
-            if (tp.HasBuff(BuffID.ObsidianSkin) && temp > 34.0)
+            if (HasPlayerBuff(tp, BuffID.ObsidianSkin) && temp > 34.0)
             {
                 temp = 34.0;
             }
@@ -747,11 +747,11 @@ namespace Univers.Survival
                 int spawnX = (int)Math.Clamp(player.X + (offsetTilesX * 16), 320, (Main.maxTilesX * 16) - 320);
                 int spawnY = (int)Math.Clamp(player.Y - 64, 320, (Main.maxTilesY * 16) - 320);
 
-                int idx = NPC.NewNPC(NPC.GetSource_NaturalSpawn(), spawnX, spawnY, NPCID.Wraith);
-                if (idx >= 0 && idx < Main.maxNPCs)
-                {
-                    Main.npc[idx].netUpdate = true;
-                }
+                int spawnTileX = Math.Clamp((int)(spawnX / 16f), 20, Main.maxTilesX - 20);
+                int spawnTileY = Math.Clamp((int)(spawnY / 16f), 20, Main.maxTilesY - 20);
+                var shadowNpc = new NPC();
+                shadowNpc.SetDefaults(NPCID.Wraith);
+                TSPlayer.Server.SpawnNPC(shadowNpc.type, shadowNpc.FullName, 1, spawnTileX, spawnTileY, 4, 4);
 
                 player.SendErrorMessage("[ SANITY KRITIS ] Pikiranmu terguncang... Bayangan gelap muncul mengejarmu!");
                 player.SendData(PacketTypes.CreateCombatTextExtended, "SHADOW CREATURE!", (int)Color.MediumPurple.PackedValue, player.X, player.Y - 36f);
@@ -845,7 +845,7 @@ namespace Univers.Survival
             {
                 ApplyBuffIfLow(player, tp, BuffID.NeutralHunger, 360);
             }
-            else if (prof.Hunger >= 85.0 && !tp.HasBuff(BuffID.WellFed3) && !tp.HasBuff(BuffID.WellFed2))
+            else if (prof.Hunger >= 85.0 && !HasPlayerBuff(tp, BuffID.WellFed3) && !HasPlayerBuff(tp, BuffID.WellFed2))
             {
                 ApplyBuffIfLow(player, tp, BuffID.WellFed, 360);
             }
@@ -874,6 +874,11 @@ namespace Univers.Survival
             {
                 ApplyBuffIfLow(player, tp, BuffID.Darkness, 240);
             }
+        }
+
+        private static bool HasPlayerBuff(Player? tp, int buffId)
+        {
+            return tp != null && tp.FindBuffIndex(buffId) != -1;
         }
 
         private static void ApplyBuffIfLow(TSPlayer player, Player tp, int buffId, int ticks)
