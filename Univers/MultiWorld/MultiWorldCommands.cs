@@ -7,6 +7,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
@@ -293,11 +294,19 @@ namespace Univers.MultiWorld
             }
         }
 
+        private static readonly ConcurrentDictionary<string, bool> _pendingTeleports = new(StringComparer.OrdinalIgnoreCase);
+
         private static async Task ExecuteTeleportAsync(TSPlayer player, string targetWorldId)
         {
             if (!player.RealPlayer)
             {
                 player.SendErrorMessage("Perintah teleport hanya bisa dipakai oleh player di dalam game.");
+                return;
+            }
+
+            if (targetWorldId.Equals(MultiWorldModule.CurrentWorldId, StringComparison.OrdinalIgnoreCase))
+            {
+                player.SendErrorMessage("Kamu sudah berada di world ini.");
                 return;
             }
 
@@ -308,20 +317,57 @@ namespace Univers.MultiWorld
                 return;
             }
 
-            player.SendInfoMessage($"[MultiWorld] Menyiapkan perpindahan ke '{target.DisplayName}'...");
-            var (ok, msg) = await MultiWorldModule.TransferPlayerAsync(
-                player,
-                player.Name,
-                player.Account?.Name ?? player.Name,
-                player.Group?.Name ?? "default",
-                player.UUID,
-                target.Id);
-
-            if (!ok)
+            if (!_pendingTeleports.TryAdd(player.Name, true))
             {
-                player.SendErrorMessage($"[MultiWorld] {msg}");
+                player.SendErrorMessage("[MultiWorld] Kamu sedang dalam proses teleport! Harap diam di tempat.");
+                return;
+            }
+
+            try
+            {
+                int warmupSeconds = 5;
+                Vector2 startPos = player.TPlayer.position;
+                player.SendInfoMessage($"[MultiWorld] Teleport ke '{target.DisplayName}' dalam {warmupSeconds} detik. JANGAN BERGERAK!");
+
+                // Cek setiap 250ms selama 5 detik (20 kali pengecekan)
+                int totalChecks = warmupSeconds * 4;
+                for (int i = 0; i < totalChecks; i++)
+                {
+                    await Task.Delay(250);
+
+                    if (!player.Active || player.TPlayer == null)
+                    {
+                        return;
+                    }
+
+                    // Toleransi gerak 16 pixel (1 tile) agar tidak batal cuma karena getaran kecil
+                    if (Vector2.Distance(startPos, player.TPlayer.position) > 16f)
+                    {
+                        player.SendErrorMessage("[MultiWorld] Teleport DIBATALKAN karena kamu bergerak!");
+                        return;
+                    }
+                }
+
+                player.SendInfoMessage($"[MultiWorld] Memindahkan ke '{target.DisplayName}'...");
+                var (ok, msg) = await MultiWorldModule.TransferPlayerAsync(
+                    player,
+                    player.Name,
+                    player.Account?.Name ?? player.Name,
+                    player.Group?.Name ?? "default",
+                    player.UUID,
+                    target.Id);
+
+                if (!ok)
+                {
+                    player.SendErrorMessage($"[MultiWorld] {msg}");
+                }
+            }
+            finally
+            {
+                _pendingTeleports.TryRemove(player.Name, out _);
             }
         }
+
 
         private static async Task RunAdminAsync(TSPlayer player, string subAction, List<string> args)
         {

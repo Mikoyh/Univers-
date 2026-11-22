@@ -4,3 +4,5 @@ obj/
 *.user
 tshock_path.txt
 tshock_world.txt
+tshock/
+ServerLog.txt

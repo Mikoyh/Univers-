@@ -17,3 +17,6 @@ Univers/bin/
 Univers/obj/
 Univers/tshock_path.txt
 Univers/tshock_world.txt
+Univers/tshock/
+Univers/ServerLog.txt
+

@@ -275,19 +275,12 @@ namespace Univers.MultiWorld
                         return (false, "TShock.Server.exe / TShock.Server.dll tidak ditemukan di folder server.");
                     }
 
+                    bool willGenerate = false;
                     string wldPath = GetWorldFilePath(def);
-                    bool willGenerate = !File.Exists(wldPath);
-                    if (!willGenerate)
+                    if (!File.Exists(wldPath) || new FileInfo(wldPath).Length < 1024)
                     {
-                        try
-                        {
-                            if (new FileInfo(wldPath).Length < 1024)
-                            {
-                                File.Delete(wldPath);
-                                willGenerate = true;
-                            }
-                        }
-                        catch { }
+                        rt.State = WorldRuntimeState.Sleeping;
+                        return (false, $"File world '{Path.GetFileName(wldPath)}' belum tersedia! Buat world terpisah dulu lalu taruh file .wld-nya di folder MultiWorld/Worlds/.");
                     }
 
                     string instDir = Path.Combine(_instancesDir, def.Id);
@@ -306,21 +299,11 @@ namespace Univers.MultiWorld
 
                     argList.Add($"-port {def.Port}");
                     argList.Add($"-world \"{wldPath}\"");
-                    if (willGenerate)
-                    {
-                        argList.Add($"-autocreate {def.GetSizeArg()}");
-                        argList.Add($"-worldname \"{SanitizeArgText(def.DisplayName)}\"");
-                        argList.Add($"-difficulty {def.GetDifficultyArg()}");
-                        argList.Add($"-worldevil {def.GetEvilArg()}");
-                        if (!string.IsNullOrWhiteSpace(def.Seed))
-                        {
-                            argList.Add($"-seed \"{SanitizeArgText(def.Seed)}\"");
-                        }
-                    }
                     argList.Add($"-configpath \"{cfgDir}\"");
                     argList.Add($"-logpath \"{logDir}\"");
                     argList.Add($"-players {_config.MaxPlayersPerChild}");
                     argList.Add("-noupnp");
+
 
                     var psi = new ProcessStartInfo
                     {
