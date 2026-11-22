@@ -534,7 +534,7 @@ namespace Univers.MultiWorld
             float spawnPx = spawnX * 16f;
             float spawnPy = Math.Max(10, spawnY - 3) * 16f;
 
-            void ForceSurfaceSpawn(TSPlayer targetPlayer)
+            void SyncClientToSpawn(TSPlayer targetPlayer)
             {
                 try
                 {
@@ -562,28 +562,26 @@ namespace Univers.MultiWorld
                 targetPlayer.TPlayer.SpawnY = spawnY;
                 targetPlayer.TPlayer.position = new Vector2(spawnPx, spawnPy);
                 targetPlayer.TPlayer.velocity = Vector2.Zero;
-                NetMessage.SendData((int)PacketTypes.PlayerSpawn, targetPlayer.Index, -1, null, targetPlayer.Index, (int)PlayerSpawnContext.SpawningIntoWorld);
+
+                // Kirim Spawn & Teleport resmi SETELAH client in-game (CompleteConnection selesai)
+                NetMessage.SendData((int)PacketTypes.PlayerSpawn, -1, -1, null, targetPlayer.Index, (int)PlayerSpawnContext.SpawningIntoWorld);
                 targetPlayer.Teleport(spawnPx, spawnPy);
             }
 
-            // 1. Eksekusi INSTAN (0ms) supaya tidak sempat terlihat di dalam tanah
-            ForceSurfaceSpawn(p);
-
-            // 2. Follow-up cepat di 80ms & 350ms untuk mengunci posisi setelah Packet 12 Proxy lewat
             _ = Task.Run(async () =>
             {
-                await Task.Delay(80);
+                await Task.Delay(250);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
-                    if (cur != null && cur.Active && cur.RealPlayer) ForceSurfaceSpawn(cur);
+                    if (cur != null && cur.Active && cur.RealPlayer) SyncClientToSpawn(cur);
                 });
 
-                await Task.Delay(270);
+                await Task.Delay(600);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
-                    if (cur != null && cur.Active && cur.RealPlayer) ForceSurfaceSpawn(cur);
+                    if (cur != null && cur.Active && cur.RealPlayer) SyncClientToSpawn(cur);
                 });
             });
         }
