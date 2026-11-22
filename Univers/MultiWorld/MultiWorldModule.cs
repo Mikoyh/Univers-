@@ -534,7 +534,7 @@ namespace Univers.MultiWorld
             float spawnPx = spawnX * 16f;
             float spawnPy = Math.Max(10, spawnY - 3) * 16f;
 
-            void SendSectionsAndTp(TSPlayer targetPlayer)
+            void ForceSurfaceSpawn(TSPlayer targetPlayer)
             {
                 try
                 {
@@ -558,24 +558,29 @@ namespace Univers.MultiWorld
                 }
                 catch { }
 
+                targetPlayer.TPlayer.SpawnX = spawnX;
+                targetPlayer.TPlayer.SpawnY = spawnY;
+                targetPlayer.TPlayer.position = new Vector2(spawnPx, spawnPy);
+                targetPlayer.TPlayer.velocity = Vector2.Zero;
+                NetMessage.SendData((int)PacketTypes.PlayerSpawn, targetPlayer.Index, -1, null, targetPlayer.Index, (int)PlayerSpawnContext.SpawningIntoWorld);
                 targetPlayer.Teleport(spawnPx, spawnPy);
             }
 
-            // Tunggu 600ms & 1200ms agar berjalan SETELAH Packet 12 (PlayerSpawn) selesai diproses TShock
+            // Eksekusi setelah Packet 12 Proxy selesai diproses (250ms & 750ms)
             _ = Task.Run(async () =>
             {
-                await Task.Delay(600);
+                await Task.Delay(250);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
-                    if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
+                    if (cur != null && cur.Active && cur.RealPlayer) ForceSurfaceSpawn(cur);
                 });
 
-                await Task.Delay(600);
+                await Task.Delay(500);
                 _mainThreadQueue.Enqueue(() =>
                 {
                     var cur = TShock.Players[who];
-                    if (cur != null && cur.Active && cur.RealPlayer) SendSectionsAndTp(cur);
+                    if (cur != null && cur.Active && cur.RealPlayer) ForceSurfaceSpawn(cur);
                 });
             });
         }
