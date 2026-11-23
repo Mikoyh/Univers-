@@ -237,7 +237,7 @@ namespace Univers.Chat
                     processedText = Regex.Replace(
                         processedText,
                         pattern,
-                        glowingMention,
+                        _ => glowingMention,
                         RegexOptions.IgnoreCase
                     );
 
@@ -274,7 +274,7 @@ namespace Univers.Chat
                             targetPlayer.TPlayer.Center.Y - 28f
                         );
 
-                        targetPlayer.SendInfoMessage($"[c/{hex}:[MENTION]] Kamu di-tag oleh {senderPlayer.Name}: \"{rawText}\"");
+                        targetPlayer.SendInfoMessage($"[c/{hex}:[][c/{hex}:MENTION][c/{hex}:]] Kamu di-tag oleh {senderPlayer.Name}: \"{rawText}\"");
 
                         var targetAfk = GetAfkInfo(targetPlayer.Name);
                         if (targetAfk.IsAfk)

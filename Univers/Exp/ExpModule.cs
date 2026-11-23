@@ -171,13 +171,14 @@ namespace Univers.Exp
 
                 string displayMessage = Univers.Chat.ChatModule.ProcessMentionsInMessage(player, rawText);
 
-                string formatted = safeTemplate
+                string formattedPrefix = safeTemplate
                     .Replace("{BadgeId}", badgeId.ToString())
                     .Replace("{Level}", data.Level.ToString())
                     .Replace("{LevelColor}", levelColor)
                     .Replace("{Prefix}", fullPrefix)
-                    .Replace("{PlayerName}", player.Name)
-                    .Replace("{Message}", displayMessage);
+                    .Replace("{PlayerName}", player.Name);
+
+                string formatted = FormatChatMessageBody(formattedPrefix, displayMessage);
 
                 if (Univers.MultiWorld.MultiWorldModule.IsCrossWorldChatActive)
                 {
@@ -192,6 +193,61 @@ namespace Univers.Exp
                     }
                 }
             }
+        }
+
+        private static string FormatChatMessageBody(string templateWithMsgPlaceholder, string displayMessage)
+        {
+            var outerMatch = System.Text.RegularExpressions.Regex.Match(
+                templateWithMsgPlaceholder,
+                @"\[c/([0-9a-fA-F]{6}):\{Message\}\]");
+
+            if (!outerMatch.Success)
+            {
+                return templateWithMsgPlaceholder.Replace("{Message}", displayMessage);
+            }
+
+            string outerHex = outerMatch.Groups[1].Value;
+            string rebuilt = WrapPlainTextWithColor(displayMessage, outerHex);
+            return templateWithMsgPlaceholder.Substring(0, outerMatch.Index)
+                + rebuilt
+                + templateWithMsgPlaceholder.Substring(outerMatch.Index + outerMatch.Length);
+        }
+
+        private static string WrapPlainTextWithColor(string text, string hexColor)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+
+            var tagRegex = new System.Text.RegularExpressions.Regex(@"(\[[a-zA-Z]{1,10}(?:/[^:\]]+)?:[^\]]*\])");
+            var matches = tagRegex.Matches(text);
+            if (matches.Count == 0)
+            {
+                return $"[c/{hexColor}:{text}]";
+            }
+
+            var sb = new System.Text.StringBuilder();
+            int cursor = 0;
+            foreach (System.Text.RegularExpressions.Match m in matches)
+            {
+                if (m.Index > cursor)
+                {
+                    string plain = text.Substring(cursor, m.Index - cursor);
+                    if (!string.IsNullOrEmpty(plain))
+                    {
+                        sb.Append($"[c/{hexColor}:{plain}]");
+                    }
+                }
+                sb.Append(m.Value);
+                cursor = m.Index + m.Length;
+            }
+            if (cursor < text.Length)
+            {
+                string tail = text.Substring(cursor);
+                if (!string.IsNullOrEmpty(tail))
+                {
+                    sb.Append($"[c/{hexColor}:{tail}]");
+                }
+            }
+            return sb.ToString();
         }
 
         public static void AddExp(TSPlayer player, PlayerExpData data, int amount, bool notifyCombatText, bool applyRankMultiplier = true)

@@ -100,20 +100,39 @@ namespace Univers.Exp
                     }
                     string target = args.Parameters[1];
                     var tPlayers = TSPlayer.FindByNameOrID(target);
-                    if (tPlayers.Count == 0)
+                    if (tPlayers.Count > 0 && tPlayers[0].IsLoggedIn)
                     {
-                        args.Player.SendErrorMessage($"[ ERROR ] Player '{target}' tidak ditemukan online di server.");
-                        return;
+                        var tPlayer = tPlayers[0];
+                        var data = ExpModule.Database.GetOrCreate(tPlayer.Account.Name);
+                        ExpModule.AddExp(tPlayer, data, addExp, true, false);
+                        args.Player.SendSuccessMessage($"[ OK ] [Univers.Exp] Berhasil menambahkan {addExp:N0} EXP ke {tPlayer.Name}!");
                     }
-                    var tPlayer = tPlayers[0];
-                    if (!tPlayer.IsLoggedIn)
+                    else
                     {
-                        args.Player.SendErrorMessage($"[ ERROR ] Player '{tPlayer.Name}' belum login.");
-                        return;
+                        var acc = TShock.UserAccounts.GetUserAccountByName(target);
+                        if (acc == null)
+                        {
+                            args.Player.SendErrorMessage($"[ ERROR ] Player/akun '{target}' tidak ditemukan.");
+                            return;
+                        }
+                        var data = ExpModule.Database.GetOrCreate(acc.Name);
+                        long curExp = data.CurrentExp + addExp;
+                        data.TotalExp += addExp;
+                        while (data.Level < 1000)
+                        {
+                            long reqExp = ExpModule.Config.CalculateRequiredExp(data.Level);
+                            if (curExp >= reqExp)
+                            {
+                                curExp -= reqExp;
+                                data.Level++;
+                            }
+                            else break;
+                        }
+                        data.CurrentExp = Math.Max(0, curExp);
+                        ExpModule.Database.Save(data);
+                        ExpApi.InvokeLevelChanged(acc.Name, data.Level, true);
+                        args.Player.SendSuccessMessage($"[ OK ] [Univers.Exp] Berhasil menambahkan {addExp:N0} EXP ke akun {acc.Name} (Lv.{data.Level})!");
                     }
-                    var data = ExpModule.Database.GetOrCreate(tPlayer.Account.Name);
-                    ExpModule.AddExp(tPlayer, data, addExp, true, false);
-                    args.Player.SendSuccessMessage($"[ OK ] [Univers.Exp] Berhasil menambahkan {addExp:N0} EXP ke {tPlayer.Name}!");
                     break;
 
                 case "set":

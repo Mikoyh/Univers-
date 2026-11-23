@@ -576,24 +576,27 @@ namespace Univers.MultiWorld
                 await newStream.WriteAsync(uuidPkt, session.Cts.Token);
             }
 
-            if (hpPkt != null)
+            if (!Terraria.Main.ServerSideCharacter)
             {
-                await newStream.WriteAsync(PrepareOutboundPacket(session, hpPkt, session.ClientSlot, targetSlot), session.Cts.Token);
-            }
+                if (hpPkt != null)
+                {
+                    await newStream.WriteAsync(PrepareOutboundPacket(session, hpPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                }
 
-            if (manaPkt != null)
-            {
-                await newStream.WriteAsync(PrepareOutboundPacket(session, manaPkt, session.ClientSlot, targetSlot), session.Cts.Token);
-            }
+                if (manaPkt != null)
+                {
+                    await newStream.WriteAsync(PrepareOutboundPacket(session, manaPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                }
 
-            if (buffPkt != null)
-            {
-                await newStream.WriteAsync(PrepareOutboundPacket(session, buffPkt, session.ClientSlot, targetSlot), session.Cts.Token);
-            }
+                if (buffPkt != null)
+                {
+                    await newStream.WriteAsync(PrepareOutboundPacket(session, buffPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                }
 
-            foreach (var sp in slotPkts)
-            {
-                await newStream.WriteAsync(PrepareOutboundPacket(session, sp, session.ClientSlot, targetSlot), session.Cts.Token);
+                foreach (var sp in slotPkts)
+                {
+                    await newStream.WriteAsync(PrepareOutboundPacket(session, sp, session.ClientSlot, targetSlot), session.Cts.Token);
+                }
             }
 
             // Packet 6: RequestWorldData

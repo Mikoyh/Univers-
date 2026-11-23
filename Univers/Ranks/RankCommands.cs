@@ -351,6 +351,32 @@ namespace Skynomi.Ranks
             }
         }
 
+        private static bool TryResolveRankAccount(string inputName, out string accountName, out TSPlayer? onlinePlayer)
+        {
+            onlinePlayer = TShock.Players.FirstOrDefault(p =>
+                p != null && p.Active && p.IsLoggedIn &&
+                p.Name.Equals(inputName, StringComparison.OrdinalIgnoreCase));
+            if (onlinePlayer?.Account != null)
+            {
+                accountName = onlinePlayer.Account.Name;
+                return true;
+            }
+
+            var acc = TShock.UserAccounts.GetUserAccountByName(inputName);
+            if (acc != null)
+            {
+                accountName = acc.Name;
+                onlinePlayer = TShock.Players.FirstOrDefault(p =>
+                    p != null && p.Active && p.IsLoggedIn &&
+                    string.Equals(p.Account?.Name, acc.Name, StringComparison.OrdinalIgnoreCase));
+                return true;
+            }
+
+            accountName = string.Empty;
+            onlinePlayer = null;
+            return false;
+        }
+
         private static void CmdSetRank(CommandArgs args)
         {
             if (args.Parameters.Count < 2)
@@ -359,10 +385,9 @@ namespace Skynomi.Ranks
                 return;
             }
 
-            var target = TShock.Players.FirstOrDefault(p => p != null && p.Name.Equals(args.Parameters[0], StringComparison.OrdinalIgnoreCase));
-            if (target == null || !target.IsLoggedIn)
+            if (!TryResolveRankAccount(args.Parameters[0], out string accountName, out TSPlayer? target))
             {
-                args.Player.SendErrorMessage("Pemain tidak ditemukan atau belum login!");
+                args.Player.SendErrorMessage($"Pemain/akun '{args.Parameters[0]}' tidak ditemukan!");
                 return;
             }
 
@@ -372,12 +397,16 @@ namespace Skynomi.Ranks
                 return;
             }
 
-            var data = RankModule.Database.GetOrCreate(target.Account.Name);
+            rankIdx = Math.Clamp(rankIdx, 0, Math.Max(0, RankModule.Config.Ranks.Count - 1));
+            var rankInfo = RankModule.Config.GetRankByIndex(rankIdx);
+
+            var data = RankModule.Database.GetOrCreate(accountName);
             data.RankIndex = rankIdx;
             RankModule.Database.Update(data);
+            EconomyApi.SetWalletLimit(accountName, rankInfo.MaxMoneyLimitShards);
 
-            args.Player.SendSuccessMessage($"Berhasil mengubah rank {target.Name} ke index {rankIdx} ({RankModule.Config.GetRankByIndex(rankIdx).Name})!");
-            target.SendSuccessMessage($"[ ADMIN ] Rank kamu diatur ke {RankModule.Config.GetRankByIndex(rankIdx).Name} oleh admin!");
+            args.Player.SendSuccessMessage($"Berhasil mengubah rank {accountName} ke index {rankIdx} ({rankInfo.Name})!");
+            target?.SendSuccessMessage($"[ ADMIN ] Rank kamu diatur ke {rankInfo.Name} oleh admin!");
         }
 
         private static void CmdAddBoss(CommandArgs args)
@@ -388,16 +417,24 @@ namespace Skynomi.Ranks
                 return;
             }
 
-            var target = TShock.Players.FirstOrDefault(p => p != null && p.Name.Equals(args.Parameters[0], StringComparison.OrdinalIgnoreCase));
-            if (target == null || !target.IsLoggedIn) return;
+            if (!TryResolveRankAccount(args.Parameters[0], out string accountName, out TSPlayer? target))
+            {
+                args.Player.SendErrorMessage($"Pemain/akun '{args.Parameters[0]}' tidak ditemukan!");
+                return;
+            }
 
             string bossKey = args.Parameters[1];
-            var data = RankModule.Database.GetOrCreate(target.Account.Name);
+            var data = RankModule.Database.GetOrCreate(accountName);
             if (!data.DefeatedBosses.Contains(bossKey))
             {
                 data.DefeatedBosses.Add(bossKey);
                 RankModule.Database.Update(data);
-                args.Player.SendSuccessMessage($"Berhasil menambahkan boss '{bossKey}' ke catatan {target.Name}!");
+                args.Player.SendSuccessMessage($"Berhasil menambahkan boss '{bossKey}' ke catatan {accountName}!");
+                target?.SendSuccessMessage($"[ ADMIN ] Catatan boss '{bossKey}' ditambahkan ke profilmu!");
+            }
+            else
+            {
+                args.Player.SendInfoMessage($"Akun {accountName} sudah memiliki catatan boss '{bossKey}'.");
             }
         }
 
@@ -409,16 +446,24 @@ namespace Skynomi.Ranks
                 return;
             }
 
-            var target = TShock.Players.FirstOrDefault(p => p != null && p.Name.Equals(args.Parameters[0], StringComparison.OrdinalIgnoreCase));
-            if (target == null || !target.IsLoggedIn) return;
+            if (!TryResolveRankAccount(args.Parameters[0], out string accountName, out TSPlayer? target))
+            {
+                args.Player.SendErrorMessage($"Pemain/akun '{args.Parameters[0]}' tidak ditemukan!");
+                return;
+            }
 
             if (bool.TryParse(args.Parameters[1], out bool hasJob) && int.TryParse(args.Parameters[2], out int count))
             {
-                var data = RankModule.Database.GetOrCreate(target.Account.Name);
+                var data = RankModule.Database.GetOrCreate(accountName);
                 data.HasJobSelected = hasJob;
                 data.JobsCompleted = count;
                 RankModule.Database.Update(data);
-                args.Player.SendSuccessMessage($"Berhasil mengatur status job {target.Name}: HasJob={hasJob}, Completed={count}");
+                args.Player.SendSuccessMessage($"Berhasil mengatur status job {accountName}: HasJob={hasJob}, Completed={count}");
+                target?.SendInfoMessage($"[ ADMIN ] Status job kamu diatur: HasJob={hasJob}, Completed={count}");
+            }
+            else
+            {
+                args.Player.SendErrorMessage("Format: /setjobstatus <player> <true/false> <angka>");
             }
         }
 
@@ -430,16 +475,24 @@ namespace Skynomi.Ranks
                 return;
             }
 
-            var target = TShock.Players.FirstOrDefault(p => p != null && p.Name.Equals(args.Parameters[0], StringComparison.OrdinalIgnoreCase));
-            if (target == null || !target.IsLoggedIn) return;
+            if (!TryResolveRankAccount(args.Parameters[0], out string accountName, out TSPlayer? target))
+            {
+                args.Player.SendErrorMessage($"Pemain/akun '{args.Parameters[0]}' tidak ditemukan!");
+                return;
+            }
 
             if (int.TryParse(args.Parameters[1], out int tags) && int.TryParse(args.Parameters[2], out int combos))
             {
-                var data = RankModule.Database.GetOrCreate(target.Account.Name);
+                var data = RankModule.Database.GetOrCreate(accountName);
                 data.ElementTagsCount = tags;
                 data.ElementCombosCount = combos;
                 RankModule.Database.Update(data);
-                args.Player.SendSuccessMessage($"Berhasil mengatur stats elemen {target.Name}: Tags={tags}, Combos={combos}");
+                args.Player.SendSuccessMessage($"Berhasil mengatur stats elemen {accountName}: Tags={tags}, Combos={combos}");
+                target?.SendInfoMessage($"[ ADMIN ] Stats elemen kamu diatur: Tags={tags}, Combos={combos}");
+            }
+            else
+            {
+                args.Player.SendErrorMessage("Format: /setelemstats <player> <tagsCount> <combosCount>");
             }
         }
 

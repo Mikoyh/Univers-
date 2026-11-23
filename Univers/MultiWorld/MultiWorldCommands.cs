@@ -178,25 +178,33 @@ namespace Univers.MultiWorld
                 case "resetssc":
                     if (!RequireAdmin(player)) return;
                     {
-                        TSPlayer? targetPlayer = args.Parameters.Count >= 2
-                            ? TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(args.Parameters[1], StringComparison.OrdinalIgnoreCase))
+                        string? targetArg = args.Parameters.Count >= 2 ? args.Parameters[1] : null;
+                        TSPlayer? targetPlayer = !string.IsNullOrWhiteSpace(targetArg)
+                            ? TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(targetArg, StringComparison.OrdinalIgnoreCase))
                             : (player.RealPlayer ? player : null);
-                        if (targetPlayer == null)
+
+                        if (targetPlayer != null)
                         {
-                            player.SendErrorMessage("Player tidak ditemukan atau sedang tidak online di world ini. Format: /mw resetssc [nama_player]");
-                            return;
-                        }
-                        if (MultiWorldModule.ResetOnlinePlayerSsc(targetPlayer, out string resetMsg))
-                        {
-                            player.SendSuccessMessage($"[MultiWorld] {resetMsg}");
-                            if (!ReferenceEquals(player, targetPlayer))
+                            if (MultiWorldModule.ResetOnlinePlayerSsc(targetPlayer, out string resetMsg))
                             {
-                                targetPlayer.SendInfoMessage("[MultiWorld] Data karakter SSC kamu telah di-reset oleh Admin ke karakter awal.");
+                                player.SendSuccessMessage($"[MultiWorld] {resetMsg}");
+                                if (!ReferenceEquals(player, targetPlayer))
+                                {
+                                    targetPlayer.SendInfoMessage("[MultiWorld] Data karakter SSC kamu telah di-reset oleh Admin ke karakter awal.");
+                                }
                             }
+                            else
+                            {
+                                player.SendErrorMessage($"[MultiWorld] {resetMsg}");
+                            }
+                        }
+                        else if (!string.IsNullOrWhiteSpace(targetArg))
+                        {
+                            _ = MultiWorldModule.ExecuteResetSscCrossWorldAsync(player, targetArg);
                         }
                         else
                         {
-                            player.SendErrorMessage($"[MultiWorld] {resetMsg}");
+                            player.SendErrorMessage("Format: /mw resetssc <nama_player>");
                         }
                     }
                     break;
