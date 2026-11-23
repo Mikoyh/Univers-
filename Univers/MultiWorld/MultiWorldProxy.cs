@@ -693,17 +693,11 @@ namespace Univers.MultiWorld
             }
         }
 
-        private byte MapBackendSlotToClient(ProxySession observerSession, byte backendSlot)
+        private static byte MapBackendSlotToClient(ProxySession observerSession, byte backendSlot)
         {
             if (backendSlot == 255) return 255;
-            if (backendSlot == observerSession.BackendSlot) return observerSession.ClientSlot;
-
-            var targetSession = FindSession(null, null, backendSlot, observerSession.CurrentWorldId);
-            if (targetSession != null)
-            {
-                return targetSession.ClientSlot;
-            }
-
+            // Wajib permutasi 1-to-1 per-session agar dua client dengan ClientSlot sama (mis. sama-sama slot 0)
+            // tidak pernah bertabrakan saat pindah world atau main bareng di child world.
             return MapSlot(backendSlot, observerSession.BackendSlot, observerSession.ClientSlot);
         }
 
@@ -725,10 +719,10 @@ namespace Univers.MultiWorld
                         else session.ActiveOtherPlayers.Remove(mappedPid);
                     }
                 }
-                else if (msgId == 27 && packet.Length >= 28) // SyncProjectile ([3..4]=id, [5..12]=pos, [13..20]=vel, [21..24]=knockBack, [25..26]=damage, [27]=owner)
+                else if (msgId == 27 && packet.Length >= 25) // SyncProjectile ([3..4]=id, [5..12]=pos, [13..20]=vel, [21]=owner, [22..23]=type, [24]=flags)
                 {
                     short projId = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(3, 2));
-                    byte owner = MapBackendSlotToClient(session, packet[27]);
+                    byte owner = MapBackendSlotToClient(session, packet[21]);
                     session.ActiveProjectiles.Add((projId, owner));
                 }
                 else if (msgId == 29 && packet.Length >= 6) // KillProjectile
@@ -751,11 +745,11 @@ namespace Univers.MultiWorld
             int slotOffset = msgId switch
             {
                 4 or 5 or 12 or 13 or 14 or 16 or 30 or 35 or 36 or 40 or 41 or 42 or 43
-                or 45 or 50 or 51 or 55 or 58 or 62 or 66 or 80 or 96 or 99 or 102 or 117
-                or 118 or 120 or 121 or 124 or 125 or 128 or 134 or 135 or 139 or 147 => 3,
+                or 45 or 50 or 51 or 55 or 58 or 62 or 66 or 80 or 84 or 96 or 99 or 102 or 117
+                or 118 or 120 or 121 or 124 or 125 or 134 or 135 or 139 or 147 => 3,
                 65 => (packet[3] & 3) != 1 ? 4 : -1, // Teleport: flag bits 0..1 == 1 adalah NPC teleport, bukan player
                 22 or 29 => 5,
-                27 => 27, // SyncProjectile: owner byte ada di offset 27
+                27 => 21, // SyncProjectile: owner byte ada di offset 21 pada Terraria 1.4.x/1.4.5
                 _ => -1
             };
 

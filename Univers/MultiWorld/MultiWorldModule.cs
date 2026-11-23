@@ -197,18 +197,45 @@ namespace Univers.MultiWorld
                 return;
             }
 
-            // Fresh login di Master Hub (bukan transfer world): restore snapshot terbaru dari shared SSC store
-            if (!IsChildProcess &&
-                player.Account != null &&
+            // Jika TShock UUID auto-login memicu PlayerPostLogin di Child sebelum packet ticket diproses, klaim ticket dulu
+            if (IsChildProcess && !_pendingSscRestores.ContainsKey(player.Name))
+            {
+                TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
+            }
+
+            // Fresh login (Master Hub atau Child langsung tanpa transfer ticket): restore snapshot terbaru dari shared SSC store
+            if (player.Account != null &&
                 !_pendingSscRestores.ContainsKey(player.Name) &&
                 !IsPlayerTransferring(player))
             {
-                var rec = SscStore?.Get(player.Account.Name);
-                if (rec != null && !string.IsNullOrWhiteSpace(rec.SnapshotJson))
+                string snapshotJson = string.Empty;
+                if (!IsChildProcess)
+                {
+                    snapshotJson = SscStore?.Get(player.Account.Name)?.SnapshotJson ?? string.Empty;
+                }
+                else
+                {
+                    try
+                    {
+                        var sscRes = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                        {
+                            Action = "load_ssc",
+                            AccountName = player.Account.Name,
+                            PlayerName = player.Name
+                        }, timeoutMs: 1500).GetAwaiter().GetResult();
+                        if (sscRes.Success && !string.IsNullOrWhiteSpace(sscRes.SscSnapshotJson))
+                        {
+                            snapshotJson = sscRes.SscSnapshotJson;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!string.IsNullOrWhiteSpace(snapshotJson))
                 {
                     player.IgnoreSSCPackets = true;
                     _sscRestoreGuardUntil[player.Name] = DateTime.UtcNow.AddSeconds(3);
-                    _pendingSscRestores[player.Name] = rec.SnapshotJson;
+                    _pendingSscRestores[player.Name] = snapshotJson;
                     ApplyPendingSscRestore(player, clearPendingAndGuard: false);
 
                     int who = player.Index;
@@ -1073,7 +1100,11 @@ namespace Univers.MultiWorld
             while (processed < 12 && _mainThreadQueue.TryDequeue(out var action))
             {
                 processed++;
-                try { action(); } catch { }
+                try { action(); }
+                catch (Exception ex)
+                {
+                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] MainThreadQueue error: {ex.Message}");
+                }
             }
 
             if ((DateTime.UtcNow - _lastSscAutoSave).TotalSeconds >= 5.0)
@@ -1157,7 +1188,6 @@ namespace Univers.MultiWorld
                 string grpName = string.IsNullOrWhiteSpace(ticket.GroupName) ? "default" : ticket.GroupName;
 
                 bool isOwnerOrSuper = ticket.HasWildcardPermission ||
-                                      grpName.Equals("owner", StringComparison.OrdinalIgnoreCase) ||
                                       grpName.Equals("superadmin", StringComparison.OrdinalIgnoreCase);
                 var group = EnsureSyncedGroup(grpName, isOwnerOrSuper, ticket.GroupPermissions);
                 string resolvedGroupName = group?.Name ?? grpName;
@@ -1193,13 +1223,16 @@ namespace Univers.MultiWorld
                 player.Account = account;
                 player.IsLoggedIn = true;
 
+                string effectiveSscJson = string.Empty;
+                bool sscDbApplied = false;
+
                 // Lindungi SSC dari paket handshake replay & pre-apply sebelum TShock.OnGreetPlayer berjalan
                 if (Main.ServerSideCharacter && player.RealPlayer && !player.HasPermission("tshock.ignore.ssc"))
                 {
                     player.IgnoreSSCPackets = true;
                     _sscRestoreGuardUntil[player.Name] = DateTime.UtcNow.AddSeconds(4);
 
-                    string effectiveSscJson = ticket.SscSnapshotJson ?? string.Empty;
+                    effectiveSscJson = ticket.SscSnapshotJson ?? string.Empty;
                     if (string.IsNullOrWhiteSpace(effectiveSscJson))
                     {
                         if (!IsChildProcess)
@@ -1233,13 +1266,13 @@ namespace Univers.MultiWorld
                     // Pre-apply ke TPlayer + local CharacterDB sebelum OnNetGreetPlayer TShock berjalan!
                     if (!string.IsNullOrWhiteSpace(effectiveSscJson))
                     {
-                        ApplySscJsonToMemoryAndLocalDb(player, effectiveSscJson);
+                        ApplySscJsonToMemoryAndLocalDb(player, effectiveSscJson, out sscDbApplied);
                     }
                 }
 
                 if (freshlyClaimed)
                 {
-                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Auto-Auth '{player.Name}' -> Group '{player.Group?.Name ?? resolvedGroupName}' (Wildcard={ticket.HasWildcardPermission}).");
+                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Auto-Auth '{player.Name}' ({CurrentWorldId}) -> Group '{player.Group?.Name ?? resolvedGroupName}', AccId={player.Account?.ID ?? 0}, SSC={(string.IsNullOrEmpty(effectiveSscJson) ? "0B" : $"{effectiveSscJson.Length}B")}, DbSaved={sscDbApplied}, IgnoreSSC={player.HasPermission("tshock.ignore.ssc")}.");
                 }
             }
             catch (Exception ex)
@@ -1377,12 +1410,15 @@ namespace Univers.MultiWorld
             {
                 try
                 {
-                    if (player.Account != null && player.PlayerData == null)
+                    if (player.Account != null && player.Account.ID > 0)
                     {
-                        player.PlayerData = GetPlayerDataWithRetry(player, player.Account.ID);
+                        player.PlayerData ??= GetPlayerDataWithRetry(player, player.Account.ID);
+                        if (player.PlayerData != null)
+                        {
+                            player.PlayerData.CopyCharacter(player);
+                            ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
+                        }
                     }
-                    player.PlayerData?.CopyCharacter(player);
-                    InsertPlayerDataWithRetry(player);
 
                     string accName = player.Account?.Name ?? player.Name;
                     _lastSavedSscJson[accName] = json;
@@ -1422,12 +1458,15 @@ namespace Univers.MultiWorld
 
             try
             {
-                if (player.Account != null && player.PlayerData == null)
+                if (player.Account != null && player.Account.ID > 0)
                 {
-                    player.PlayerData = GetPlayerDataWithRetry(player, player.Account.ID);
+                    player.PlayerData ??= GetPlayerDataWithRetry(player, player.Account.ID);
+                    if (player.PlayerData != null)
+                    {
+                        player.PlayerData.CopyCharacter(player);
+                        ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
+                    }
                 }
-                player.PlayerData?.CopyCharacter(player);
-                InsertPlayerDataWithRetry(player);
             }
             catch { }
 
@@ -1506,6 +1545,12 @@ namespace Univers.MultiWorld
 
         private static bool ApplySscJsonToMemoryAndLocalDb(TSPlayer player, string sscJson)
         {
+            return ApplySscJsonToMemoryAndLocalDb(player, sscJson, out _);
+        }
+
+        private static bool ApplySscJsonToMemoryAndLocalDb(TSPlayer player, string sscJson, out bool dbSaved)
+        {
+            dbSaved = false;
             if (player == null || player.TPlayer == null || string.IsNullOrWhiteSpace(sscJson)) return false;
 
             try
@@ -1515,15 +1560,19 @@ namespace Univers.MultiWorld
 
                 ApplySnapshotToTerrariaPlayer(player.TPlayer, snap);
 
-                if (player.Account != null)
+                if (player.Account != null && player.Account.ID > 0)
                 {
                     player.PlayerData ??= GetPlayerDataWithRetry(player, player.Account.ID);
                     if (player.PlayerData != null)
                     {
                         player.PlayerData.CopyCharacter(player);
-                        InsertPlayerDataWithRetry(player);
+                        dbSaved = ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
                     }
                     _lastSavedSscJson[player.Account.Name] = sscJson;
+                }
+                else
+                {
+                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] SSC warning '{player.Name}' ({CurrentWorldId}): Account belum valid (ID={player.Account?.ID ?? -1}), skip tulis SQLite lokal.");
                 }
                 return true;
             }
@@ -1552,7 +1601,7 @@ namespace Univers.MultiWorld
                     {
                         if (!_pendingSscRestores.ContainsKey(online.Name) && !IsSscRestoreGuarded(online.Name))
                         {
-                            ApplySscJsonToMemoryAndLocalDb(online, sscJson);
+                            ApplySscJsonToMemoryAndLocalDb(online, sscJson, out _);
                         }
                         return;
                     }
@@ -1584,7 +1633,7 @@ namespace Univers.MultiWorld
                         if (writerTs.PlayerData != null)
                         {
                             writerTs.PlayerData.CopyCharacter(writerTs);
-                            InsertPlayerDataWithRetry(writerTs);
+                            ForceWriteLocalCharacterDb(writerTs, bypassPermissionGate: true);
                         }
                     }
                     finally
@@ -1617,18 +1666,28 @@ namespace Univers.MultiWorld
 
             try
             {
-                if (player.Account != null && player.PlayerData == null)
+                if (player.Account != null && player.Account.ID > 0 && player.PlayerData == null)
                 {
                     player.PlayerData = GetPlayerDataWithRetry(player, player.Account.ID);
                 }
 
-                if (hadPending && !string.IsNullOrWhiteSpace(sscJson) && ApplySscJsonToMemoryAndLocalDb(player, sscJson))
+                if (hadPending && !string.IsNullOrWhiteSpace(sscJson) && ApplySscJsonToMemoryAndLocalDb(player, sscJson, out bool dbSaved))
                 {
                     if (player.PlayerData != null)
                     {
-                        player.PlayerData.CopyCharacter(player);
-                        player.PlayerData.RestoreCharacter(player);
-                        InsertPlayerDataWithRetry(player);
+                        try
+                        {
+                            player.PlayerData.CopyCharacter(player);
+                            player.PlayerData.RestoreCharacter(player);
+                        }
+                        catch (Exception ex)
+                        {
+                            TShock.Log.ConsoleWarn($"[Univers.MultiWorld] RestoreCharacter fallback '{player.Name}' ({CurrentWorldId}): {ex.Message}");
+                        }
+                        if (!dbSaved)
+                        {
+                            dbSaved = ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
+                        }
                     }
 
                     try
@@ -1647,7 +1706,7 @@ namespace Univers.MultiWorld
                         }
                         catch
                         {
-                            break;
+                            continue;
                         }
                     }
 
@@ -1659,16 +1718,28 @@ namespace Univers.MultiWorld
                         }
                         catch { }
                     }
+
+                    if (clearPendingAndGuard)
+                    {
+                        TShock.Log.ConsoleInfo($"[Univers.MultiWorld] SSC Restore '{player.Name}' ({CurrentWorldId}): len={sscJson.Length}, dbSaved={dbSaved}.");
+                    }
                     return;
                 }
 
-                if (player.Account != null)
+                if (player.Account != null && player.Account.ID > 0)
                 {
                     var latestData = GetPlayerDataWithRetry(player, player.Account.ID);
                     if (latestData != null && latestData.exists)
                     {
                         player.PlayerData = latestData;
-                        latestData.RestoreCharacter(player);
+                        try
+                        {
+                            latestData.RestoreCharacter(player);
+                        }
+                        catch (Exception ex)
+                        {
+                            TShock.Log.ConsoleWarn($"[Univers.MultiWorld] RestoreCharacter DB fallback '{player.Name}' ({CurrentWorldId}): {ex.Message}");
+                        }
                     }
                 }
             }
@@ -1707,20 +1778,66 @@ namespace Univers.MultiWorld
             return null;
         }
 
-        private static void InsertPlayerDataWithRetry(TSPlayer player)
+        private static bool ForceWriteLocalCharacterDb(TSPlayer player, bool bypassPermissionGate = false)
         {
-            for (int i = 0; i < 3; i++)
+            if (player == null || !player.IsLoggedIn || player.Account == null || player.Account.ID <= 0 || player.PlayerData == null)
             {
-                try
+                return false;
+            }
+
+            int idx = player.Index;
+            bool hasNetClient = idx >= 0 && idx < Netplay.Clients.Length && Netplay.Clients[idx] != null;
+            int prevState = hasNetClient ? Netplay.Clients[idx].State : 0;
+            Group? prevGroup = player.Group;
+
+            try
+            {
+                if (hasNetClient && prevState < 10)
                 {
-                    TShock.CharacterDB.InsertPlayerData(player);
-                    return;
+                    Netplay.Clients[idx].State = 10;
                 }
-                catch
+                if (bypassPermissionGate)
                 {
+                    player.Group = new Group("univers_ssc_writer");
+                }
+
+                for (int i = 0; i < 3; i++)
+                {
+                    try
+                    {
+                        if (TShock.CharacterDB.InsertPlayerData(player))
+                        {
+                            player.PlayerData.exists = true;
+                            return true;
+                        }
+                    }
+                    catch
+                    {
+                        // Refresh exists flag jika row ternyata sudah ada di SQLite
+                        var fresh = GetPlayerDataWithRetry(player, player.Account.ID);
+                        if (fresh != null)
+                        {
+                            fresh.CopyCharacter(player);
+                            player.PlayerData = fresh;
+                        }
+                    }
                     System.Threading.Thread.Sleep(25);
                 }
             }
+            finally
+            {
+                if (bypassPermissionGate)
+                {
+                    player.Group = prevGroup;
+                }
+                if (hasNetClient && prevState < 10)
+                {
+                    Netplay.Clients[idx].State = prevState;
+                }
+            }
+
+            TShock.Log.ConsoleWarn($"[Univers.MultiWorld] InsertPlayerData gagal menulis ke SQLite ({CurrentWorldId}) untuk '{player.Name}' (AccId={player.Account.ID}).");
+            return false;
         }
 
         public static bool ResetOnlinePlayerSsc(TSPlayer target, out string message)
@@ -1789,7 +1906,7 @@ namespace Univers.MultiWorld
                 {
                     target.PlayerData.CopyCharacter(target);
                     target.PlayerData.RestoreCharacter(target);
-                    InsertPlayerDataWithRetry(target);
+                    ForceWriteLocalCharacterDb(target, bypassPermissionGate: true);
                 }
                 else
                 {
