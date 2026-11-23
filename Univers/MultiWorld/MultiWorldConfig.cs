@@ -118,6 +118,9 @@ namespace Univers.MultiWorld
         public bool CrossWorldChat { get; set; } = true;
         public bool CrossWorldPresenceNotices { get; set; } = true;
 
+        // Daftar nama file DLL di ServerPlugins yang tidak ikut dimuat di Child World (mis. plugin pihak ketiga yang lock file DB tunggal)
+        public List<string> ChildExcludedPlugins { get; set; } = new();
+
         public List<WorldDefinition> Worlds { get; set; } = new();
 
         public static MultiWorldConfig Load(string path)
@@ -189,6 +192,7 @@ namespace Univers.MultiWorld
             HubWorldId = SanitizeWorldId(string.IsNullOrWhiteSpace(HubWorldId) ? "lobby" : HubWorldId);
             if (string.IsNullOrWhiteSpace(HubWorldId)) HubWorldId = "lobby";
 
+            ChildExcludedPlugins ??= new List<string>();
             Worlds ??= new List<WorldDefinition>();
 
             var hub = Worlds.FirstOrDefault(w => w.IsHub) ?? Worlds.FirstOrDefault(w => w.Id.Equals(HubWorldId, StringComparison.OrdinalIgnoreCase));

@@ -48,6 +48,7 @@ namespace Univers.MultiWorld
         public string LastProgressLine { get; set; } = string.Empty;
         public readonly Queue<string> RecentLogs = new();
         public readonly object LogLock = new();
+        public readonly ConcurrentDictionary<string, DateTime> LogCooldowns = new(StringComparer.OrdinalIgnoreCase);
         public readonly SemaphoreSlim LifecycleLock = new(1, 1);
     }
 
@@ -286,10 +287,12 @@ namespace Univers.MultiWorld
                     string instDir = Path.Combine(_instancesDir, def.Id);
                     string cfgDir = Path.Combine(instDir, "config");
                     string logDir = Path.Combine(instDir, "logs");
+                    string legacyTshockDir = Path.Combine(instDir, "tshock");
                     Directory.CreateDirectory(cfgDir);
                     Directory.CreateDirectory(logDir);
+                    Directory.CreateDirectory(legacyTshockDir);
                     PrepareChildTShockConfig(cfgDir, def.Port);
-                    EnsureChildServerPluginsLink(instDir);
+                    EnsureChildServerPluginsLink(instDir, _config.ChildExcludedPlugins);
 
                     var argList = new List<string>();
                     if (!string.IsNullOrEmpty(baseArgs))
@@ -830,10 +833,30 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static void EnsureChildServerPluginsLink(string instDir)
+        private static void EnsureChildServerPluginsLink(string instDir, List<string>? excludedPlugins = null)
         {
             string sourcePlugins = Path.Combine(AppContext.BaseDirectory, "ServerPlugins");
             if (!Directory.Exists(sourcePlugins)) return;
+
+            var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (excludedPlugins != null)
+            {
+                foreach (var entry in excludedPlugins)
+                {
+                    if (!string.IsNullOrWhiteSpace(entry))
+                    {
+                        string clean = Path.GetFileName(entry.Trim());
+                        if (!string.IsNullOrWhiteSpace(clean))
+                        {
+                            excluded.Add(clean);
+                            if (!clean.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                            {
+                                excluded.Add(clean + ".dll");
+                            }
+                        }
+                    }
+                }
+            }
 
             string targetPlugins = Path.Combine(instDir, "ServerPlugins");
             if (Directory.Exists(targetPlugins))
@@ -842,59 +865,49 @@ namespace Univers.MultiWorld
                 {
                     var dirInfo = new DirectoryInfo(targetPlugins);
                     bool isLink = (dirInfo.Attributes & FileAttributes.ReparsePoint) != 0 || !string.IsNullOrEmpty(dirInfo.LinkTarget);
-                    if (isLink) return;
-
-                    foreach (string file in Directory.GetFiles(sourcePlugins, "*.dll"))
+                    if (isLink)
                     {
-                        string dst = Path.Combine(targetPlugins, Path.GetFileName(file));
-                        var srcInfo = new FileInfo(file);
-                        var dstInfo = new FileInfo(dst);
-                        if (!dstInfo.Exists || dstInfo.Length != srcInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
-                        {
-                            File.Copy(file, dst, true);
-                        }
+                        // Lepas symlink agar plugin pihak ketiga di Child tidak saling lock file journal/DB dengan Master
+                        Directory.Delete(targetPlugins, false);
                     }
                 }
                 catch { }
-                return;
             }
-
-            try
-            {
-                if (OperatingSystem.IsWindows())
-                {
-                    var mk = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = "cmd.exe",
-                        Arguments = $"/c mklink /J \"{targetPlugins}\" \"{sourcePlugins}\"",
-                        CreateNoWindow = true,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
-                    });
-                    mk?.WaitForExit(3000);
-                    if (Directory.Exists(targetPlugins)) return;
-                }
-                else
-                {
-                    Directory.CreateSymbolicLink(targetPlugins, sourcePlugins);
-                    if (Directory.Exists(targetPlugins)) return;
-                }
-            }
-            catch { }
 
             try
             {
                 Directory.CreateDirectory(targetPlugins);
+                var expectedDlls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (string file in Directory.GetFiles(sourcePlugins, "*.dll"))
                 {
-                    string dst = Path.Combine(targetPlugins, Path.GetFileName(file));
-                    File.Copy(file, dst, true);
+                    string fileName = Path.GetFileName(file);
+                    if (excluded.Contains(fileName))
+                    {
+                        continue;
+                    }
+
+                    expectedDlls.Add(fileName);
+                    string dst = Path.Combine(targetPlugins, fileName);
+                    var srcInfo = new FileInfo(file);
+                    var dstInfo = new FileInfo(dst);
+                    if (!dstInfo.Exists || dstInfo.Length != srcInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
+                    {
+                        File.Copy(file, dst, true);
+                    }
+                }
+
+                foreach (string existing in Directory.GetFiles(targetPlugins, "*.dll"))
+                {
+                    string fileName = Path.GetFileName(existing);
+                    if (!expectedDlls.Contains(fileName))
+                    {
+                        try { File.Delete(existing); } catch { }
+                    }
                 }
             }
             catch (Exception ex)
             {
-                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menautkan ServerPlugins ke child: {ex.Message}");
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menyinkronkan ServerPlugins ke child: {ex.Message}");
             }
         }
 
@@ -990,6 +1003,29 @@ namespace Univers.MultiWorld
                 line.Contains("[MultiWorld", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("[Univers", StringComparison.OrdinalIgnoreCase))
             {
+                bool isRepeatedNoise = (isError ||
+                    line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("exception", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("warn", StringComparison.OrdinalIgnoreCase)) &&
+                    !line.Contains("executed:", StringComparison.OrdinalIgnoreCase) &&
+                    !line.Contains("said:", StringComparison.OrdinalIgnoreCase);
+
+                if (isRepeatedNoise)
+                {
+                    string key = line.Trim();
+                    DateTime now = DateTime.UtcNow;
+                    if (rt.LogCooldowns.TryGetValue(key, out var nextAllowed) && now < nextAllowed)
+                    {
+                        return;
+                    }
+                    rt.LogCooldowns[key] = now.AddMinutes(5);
+                    if (rt.LogCooldowns.Count > 128)
+                    {
+                        rt.LogCooldowns.Clear();
+                        rt.LogCooldowns[key] = now.AddMinutes(5);
+                    }
+                }
+
                 TShock.Log.ConsoleInfo($"[MW:{rt.WorldId}] {line}");
             }
         }
