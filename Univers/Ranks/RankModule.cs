@@ -49,6 +49,8 @@ namespace Skynomi.Ranks
             ServerApi.Hooks.GamePostInitialize.Register(UniversPlugin.Instance, OnGamePostInitialize);
             PlayerHooks.PlayerPostLogin += OnPlayerPostLogin;
 
+            BossContributionTracker.Initialize();
+
             _playtimeTimer = new System.Timers.Timer(30000);
             _playtimeTimer.Elapsed += HeartbeatTick;
             _playtimeTimer.AutoReset = true;
@@ -61,6 +63,8 @@ namespace Skynomi.Ranks
 
         public void Dispose()
         {
+            BossContributionTracker.Dispose();
+
             ServerApi.Hooks.NpcKilled.Deregister(UniversPlugin.Instance, OnNpcKilled);
             ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnGetData);
             ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnPlayerGreet);
@@ -213,73 +217,16 @@ namespace Skynomi.Ranks
 
         #endregion
 
-        #region Personal Boss Defeat Tracker
+        #region Personal Boss Defeat Tracker & Anti-Carry Engine
 
         private void OnNpcKilled(NpcKilledEventArgs e)
         {
             var npc = e.npc;
-            if (npc == null || (!npc.boss && npc.type != NPCID.EaterofWorldsHead && npc.type != NPCID.EaterofWorldsBody && npc.type != NPCID.EaterofWorldsTail))
-                return;
-
-            string bossKey = IdentifyBossKey(npc);
-            if (string.IsNullOrEmpty(bossKey)) return;
-
-            foreach (var player in TShock.Players)
-            {
-                if (player == null || !player.Active || !player.IsLoggedIn || player.Dead) continue;
-
-                float dist = Vector2.Distance(player.TPlayer.position, npc.position);
-                bool inBossFight = dist <= 3500f || npc.type == NPCID.WallofFlesh || npc.type == NPCID.MoonLordCore;
-
-                if (inBossFight)
-                {
-                    var data = Database.GetOrCreate(player.Account.Name);
-                    if (!data.DefeatedBosses.Contains(bossKey))
-                    {
-                        data.DefeatedBosses.Add(bossKey);
-                        Database.Update(data);
-
-                        player.SendSuccessMessage($"[ + PROGRES PERSONAL ] Kamu telah menumbangkan {npc.FullName}! Tercatat di riwayat rankup!");
-                    }
-                }
-            }
+            if (npc == null) return;
+            BossContributionTracker.ProcessBossDefeat(npc);
         }
 
-        private string IdentifyBossKey(NPC npc)
-        {
-            if (npc.type == NPCID.HallowBoss && Main.dayTime)
-            {
-                return "DaytimeEmpressOfLight";
-            }
-
-            return npc.type switch
-            {
-                NPCID.KingSlime => "KingSlime",
-                NPCID.EyeofCthulhu => "EyeOfCthulhu",
-                NPCID.EaterofWorldsHead or NPCID.EaterofWorldsBody or NPCID.EaterofWorldsTail or NPCID.BrainofCthulhu => "EaterOfWorldsOrBrain",
-                NPCID.QueenBee => "QueenBee",
-                NPCID.SkeletronHead => "Skeletron",
-                NPCID.Deerclops => "Deerclops",
-                NPCID.WallofFlesh or NPCID.WallofFleshEye => "WallOfFlesh",
-                NPCID.QueenSlimeBoss => "QueenSlime",
-                NPCID.Retinazer or NPCID.Spazmatism => "TheTwins",
-                NPCID.TheDestroyer or NPCID.TheDestroyerBody or NPCID.TheDestroyerTail => "TheDestroyer",
-                NPCID.SkeletronPrime => "SkeletronPrime",
-                NPCID.Plantera => "Plantera",
-                NPCID.Golem or NPCID.GolemHead => "Golem",
-                NPCID.DukeFishron => "DukeFishron",
-                NPCID.Pumpking => "Pumpking",
-                NPCID.MourningWood => "MourningWood",
-                NPCID.IceQueen => "IceQueen",
-                NPCID.MartianSaucer or NPCID.MartianSaucerCore => "MartianSaucer",
-                NPCID.DD2Betsy => "Betsy",
-                NPCID.LunarTowerSolar or NPCID.LunarTowerVortex or NPCID.LunarTowerNebula or NPCID.LunarTowerStardust => "CelestialPillars",
-                NPCID.HallowBoss => "EmpressOfLight",
-                NPCID.CultistBoss => "LunaticCultist",
-                NPCID.MoonLordCore or NPCID.MoonLordHead or NPCID.MoonLordHand => "MoonLord",
-                _ => ""
-            };
-        }
+        public static string IdentifyBossKey(NPC npc) => BossContributionTracker.IdentifyBossKey(npc);
 
         #endregion
 

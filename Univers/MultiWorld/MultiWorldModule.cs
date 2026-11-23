@@ -110,7 +110,9 @@ namespace Univers.MultiWorld
             ServerApi.Hooks.NetGetData.Register(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Register(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Register(UniversPlugin.Instance, OnGamePostInitialize);
+            ServerApi.Hooks.ServerCommand.Register(UniversPlugin.Instance, OnServerCommand);
             PlayerHooks.PlayerPostLogin += OnPlayerPostLogin;
+            PlayerHooks.PlayerCommand += OnPlayerCommand;
 
             MultiWorldCommands.Register();
 
@@ -465,7 +467,9 @@ namespace Univers.MultiWorld
             ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnNetGetData);
             ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.GamePostInitialize.Deregister(UniversPlugin.Instance, OnGamePostInitialize);
+            ServerApi.Hooks.ServerCommand.Deregister(UniversPlugin.Instance, OnServerCommand);
             PlayerHooks.PlayerPostLogin -= OnPlayerPostLogin;
+            PlayerHooks.PlayerCommand -= OnPlayerCommand;
 
             _effectiveMasterHubPort = 0;
             _takenOverPublicPort = 0;
@@ -575,11 +579,42 @@ namespace Univers.MultiWorld
 
         private static Task<IpcResponse> HandleChildPushRequestAsync(IpcRequest req)
         {
-            if (req.Action == "push_chat" || req.Action == "push_notice")
+            if (req.Action == "push_chat" || req.Action == "push_notice" || req.Action == "push_broadcast")
             {
                 var c = new Color(req.ColorR, req.ColorG, req.ColorB);
                 string msg = req.FormattedMessage;
                 _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(msg, c));
+                return Task.FromResult(new IpcResponse { Success = true });
+            }
+            else if (req.Action == "remote_give")
+            {
+                var target = TSPlayer.FindByName(req.PlayerName).FirstOrDefault();
+                if (target == null || !target.Active)
+                {
+                    return Task.FromResult(new IpcResponse { Success = false, Message = $"Player '{req.PlayerName}' tidak ditemukan di world '{CurrentWorldId}'." });
+                }
+                var items = FindItems(req.AdminSubAction);
+                if (items.Count == 0)
+                {
+                    return Task.FromResult(new IpcResponse { Success = false, Message = $"Item '{req.AdminSubAction}' tidak ditemukan." });
+                }
+                var item = items[0];
+                int stack = req.Port > 0 ? Math.Min(req.Port, item.maxStack) : item.maxStack;
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    target.GiveItem(item.type, stack);
+                    target.SendSuccessMessage($"[c/38bdf8:[SERVER]] Kamu menerima {stack}x {item.Name}!");
+                });
+                return Task.FromResult(new IpcResponse { Success = true, Message = $"Berhasil memberikan {stack}x {item.Name} kepada {target.Name} di '{CurrentWorldId}'." });
+            }
+            else if (req.Action == "remote_exec")
+            {
+                string command = req.FormattedMessage;
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    Commands.HandleCommand(TSPlayer.Server, command);
+                });
+                return Task.FromResult(new IpcResponse { Success = true, Message = $"Perintah '{command}' dieksekusi di '{CurrentWorldId}'." });
             }
             return Task.FromResult(new IpcResponse { Success = true });
         }
@@ -822,6 +857,16 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null || string.IsNullOrWhiteSpace(player.Name)) return;
 
+            if (Main.ServerSideCharacter && player.RealPlayer && player.IsLoggedIn)
+            {
+                try
+                {
+                    player.PlayerData?.CopyCharacter(player);
+                    InsertPlayerDataWithRetry(player);
+                }
+                catch { }
+            }
+
             string pName = player.Name;
             MultiWorldCommands.ClearPendingTeleport(pName);
             ClearTransferLock(pName);
@@ -880,6 +925,8 @@ namespace Univers.MultiWorld
          }
      }
 
+        private static DateTime _lastSscAutoSave = DateTime.UtcNow;
+
         private static void OnGameUpdate(EventArgs args)
         {
             int processed = 0;
@@ -887,6 +934,26 @@ namespace Univers.MultiWorld
             {
                 processed++;
                 try { action(); } catch { }
+            }
+
+            if ((DateTime.UtcNow - _lastSscAutoSave).TotalSeconds >= 20.0)
+            {
+                _lastSscAutoSave = DateTime.UtcNow;
+                if (Main.ServerSideCharacter)
+                {
+                    foreach (var p in TShock.Players)
+                    {
+                        if (p != null && p.Active && p.RealPlayer && p.IsLoggedIn)
+                        {
+                            try
+                            {
+                                p.PlayerData?.CopyCharacter(p);
+                                InsertPlayerDataWithRetry(p);
+                            }
+                            catch { }
+                        }
+                    }
+                }
             }
         }
 
@@ -1594,6 +1661,80 @@ namespace Univers.MultiWorld
                      }
                      return new IpcResponse { Success = true };
 
+                 case "relay_broadcast":
+                     if (!string.IsNullOrWhiteSpace(req.FormattedMessage))
+                     {
+                         string msg = req.FormattedMessage;
+                         string cleanConsole = StripTerrariaColorTags(msg);
+                         TShock.Log.ConsoleInfo(cleanConsole);
+                         _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(msg, new Color(250, 204, 21)));
+                         await PushMessageToOtherChildrenAsync(req.WorldId, "push_broadcast", msg, 250, 204, 21);
+                     }
+                     return new IpcResponse { Success = true };
+
+                 case "remote_give":
+                     {
+                         var targetDef = Config.GetWorld(req.WorldId);
+                         if (targetDef != null && targetDef.IsHub)
+                         {
+                             var target = TSPlayer.FindByName(req.PlayerName).FirstOrDefault();
+                             if (target == null || !target.Active)
+                             {
+                                 return new IpcResponse { Success = false, Message = $"Player '{req.PlayerName}' tidak ditemukan di Hub." };
+                             }
+                             var items = FindItems(req.AdminSubAction);
+                             if (items.Count == 0)
+                             {
+                                 return new IpcResponse { Success = false, Message = $"Item '{req.AdminSubAction}' tidak ditemukan." };
+                             }
+                             var item = items[0];
+                             int stack = req.Port > 0 ? Math.Min(req.Port, item.maxStack) : item.maxStack;
+                             _mainThreadQueue.Enqueue(() =>
+                             {
+                                 target.GiveItem(item.type, stack);
+                                 target.SendSuccessMessage($"[c/38bdf8:[SERVER]] Kamu menerima {stack}x {item.Name}!");
+                             });
+                             return new IpcResponse { Success = true, Message = $"Berhasil memberikan {stack}x {item.Name} kepada {target.Name} di Hub." };
+                         }
+
+                         var targets = ProcessManager?.GetRunningCallbackTargets(null) ?? new List<(string, int)>();
+                         var child = targets.FirstOrDefault(t => t.WorldId.Equals(req.WorldId, StringComparison.OrdinalIgnoreCase));
+                         if (child.CallbackPort <= 0)
+                         {
+                             return new IpcResponse { Success = false, Message = $"World '{req.WorldId}' tidak sedang online." };
+                         }
+                         return await MultiWorldIpcClient.SendAsync(child.CallbackPort, req, 4000);
+                     }
+
+                 case "remote_exec":
+                     {
+                         string cmd = req.FormattedMessage;
+                         if (string.Equals(req.WorldId, "all", StringComparison.OrdinalIgnoreCase))
+                         {
+                             _mainThreadQueue.Enqueue(() => Commands.HandleCommand(TSPlayer.Server, cmd));
+                             var targets = ProcessManager?.GetRunningCallbackTargets(null) ?? new List<(string, int)>();
+                             foreach (var t in targets)
+                             {
+                                 _ = MultiWorldIpcClient.SendAsync(t.CallbackPort, req, 3000);
+                             }
+                             return new IpcResponse { Success = true, Message = $"Perintah '{cmd}' disebarkan ke seluruh world." };
+                         }
+                         else if (string.Equals(req.WorldId, Config.HubWorldId, StringComparison.OrdinalIgnoreCase))
+                         {
+                             _mainThreadQueue.Enqueue(() => Commands.HandleCommand(TSPlayer.Server, cmd));
+                             return new IpcResponse { Success = true, Message = $"Perintah '{cmd}' dieksekusi di Hub." };
+                         }
+                         else
+                         {
+                             var targets = ProcessManager?.GetRunningCallbackTargets(null) ?? new List<(string, int)>();
+                             var child = targets.FirstOrDefault(t => t.WorldId.Equals(req.WorldId, StringComparison.OrdinalIgnoreCase));
+                             if (child.CallbackPort <= 0)
+                             {
+                                 return new IpcResponse { Success = false, Message = $"World '{req.WorldId}' tidak sedang online." };
+                             }
+                             return await MultiWorldIpcClient.SendAsync(child.CallbackPort, req, 4000);
+                         }
+                     }
 
                     case "presence_event":
                         await HandleMasterPresenceEventAsync(req.AdminSubAction, req.PlayerName, req.WorldId);
@@ -1826,6 +1967,381 @@ namespace Univers.MultiWorld
             }
 
             return ProcessManager?.GetWorldSnapshots(GetLocalActivePlayerNames()) ?? new List<WorldStatusSnapshot>();
+        }
+
+        #region Cross-World Console & Command Integration
+
+        public static List<Item> FindItems(string query)
+        {
+            if (int.TryParse(query, out int id) && id > 0 && id < Terraria.ID.ItemID.Count)
+            {
+                return TShock.Utils.GetItemById(id);
+            }
+            return TShock.Utils.GetItemByName(query);
+        }
+
+        private static void OnServerCommand(CommandEventArgs args)
+        {
+            if (args.Handled || string.IsNullOrWhiteSpace(args.Command)) return;
+            string line = args.Command.Trim();
+            string cmdName = line;
+            string remainder = string.Empty;
+            int spaceIdx = line.IndexOf(' ');
+            if (spaceIdx > 0)
+            {
+                cmdName = line.Substring(0, spaceIdx);
+                remainder = line.Substring(spaceIdx + 1).Trim();
+            }
+            if (cmdName.StartsWith("/")) cmdName = cmdName.Substring(1);
+            cmdName = cmdName.ToLowerInvariant();
+
+            if (cmdName == "broadcast" || cmdName == "bc")
+            {
+                if (!string.IsNullOrEmpty(remainder))
+                {
+                    string bcMsg = $"[c/facc15:[BROADCAST]] {remainder}";
+                    if (!IsChildProcess)
+                    {
+                        _ = PushMessageToOtherChildrenAsync(null, "push_broadcast", bcMsg, 250, 204, 21);
+                    }
+                    else
+                    {
+                        _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                        {
+                            Action = "relay_broadcast",
+                            WorldId = CurrentWorldId,
+                            FormattedMessage = bcMsg
+                        });
+                    }
+                }
+            }
+            else if (cmdName == "say")
+            {
+                if (!string.IsNullOrEmpty(remainder))
+                {
+                    string sayMsg = $"[c/38bdf8:[SERVER]] {remainder}";
+                    if (!IsChildProcess)
+                    {
+                        _ = PushMessageToOtherChildrenAsync(null, "push_chat", sayMsg, 56, 189, 248);
+                    }
+                    else
+                    {
+                        _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                        {
+                            Action = "relay_chat",
+                            WorldId = CurrentWorldId,
+                            FormattedMessage = sayMsg
+                        });
+                    }
+                }
+            }
+            else if (cmdName == "give" || cmdName == "g")
+            {
+                var parts = ParseCommandArguments(remainder);
+                if (parts.Count >= 2)
+                {
+                    if (TryInterceptCrossWorldGive(TSPlayer.Server, parts))
+                    {
+                        args.Handled = true;
+                    }
+                }
+            }
+            else if (cmdName == "mwexec")
+            {
+                var parts = ParseCommandArguments(remainder);
+                if (parts.Count >= 2)
+                {
+                    string targetWorld = parts[0];
+                    string cmdToRun = string.Join(" ", parts.Skip(1));
+                    _ = ExecuteRemoteCommandAsync(TSPlayer.Server, targetWorld, cmdToRun);
+                    args.Handled = true;
+                }
+                else
+                {
+                    TShock.Log.ConsoleInfo("Format: mwexec <world_id|all> <perintah...>");
+                    args.Handled = true;
+                }
+            }
+        }
+
+        private static void OnPlayerCommand(PlayerCommandEventArgs args)
+        {
+            if (args.Handled || args.Player == null) return;
+            string cmd = args.CommandName?.ToLowerInvariant() ?? string.Empty;
+
+            if (cmd == "broadcast" || cmd == "bc")
+            {
+                if (args.Player.HasPermission(Permissions.broadcast) && args.Parameters.Count > 0)
+                {
+                    string msgText = string.Join(" ", args.Parameters);
+                    string bcMsg = $"[c/facc15:[BROADCAST]] {msgText}";
+                    if (!IsChildProcess)
+                    {
+                        _ = PushMessageToOtherChildrenAsync(null, "push_broadcast", bcMsg, 250, 204, 21);
+                    }
+                    else
+                    {
+                        _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                        {
+                            Action = "relay_broadcast",
+                            WorldId = CurrentWorldId,
+                            FormattedMessage = bcMsg
+                        });
+                    }
+                }
+            }
+            else if (cmd == "say")
+            {
+                if (args.Player.HasPermission(Permissions.say) && args.Parameters.Count > 0)
+                {
+                    string msgText = string.Join(" ", args.Parameters);
+                    string sayMsg = $"[c/38bdf8:[SERVER {args.Player.Name}]] {msgText}";
+                    if (!IsChildProcess)
+                    {
+                        _ = PushMessageToOtherChildrenAsync(null, "push_chat", sayMsg, 56, 189, 248);
+                    }
+                    else
+                    {
+                        _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                        {
+                            Action = "relay_chat",
+                            WorldId = CurrentWorldId,
+                            FormattedMessage = sayMsg
+                        });
+                    }
+                }
+            }
+            else if (cmd == "give" || cmd == "g")
+            {
+                if (args.Player.HasPermission(Permissions.give) && args.Parameters.Count >= 2)
+                {
+                    if (TryInterceptCrossWorldGive(args.Player, args.Parameters))
+                    {
+                        args.Handled = true;
+                    }
+                }
+            }
+        }
+
+        private static bool TryInterceptCrossWorldGive(TSPlayer executor, List<string> parts)
+        {
+            if (parts.Count < 2) return false;
+
+            var localA = TSPlayer.FindByName(parts[0]).FirstOrDefault();
+            var localB = TSPlayer.FindByName(parts[1]).FirstOrDefault();
+            if ((localA != null && localA.Active) || (localB != null && localB.Active))
+            {
+                return false;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                await ExecuteSmartCrossWorldGiveAsync(executor, parts);
+            });
+
+            return true;
+        }
+
+        public static async Task ExecuteSmartCrossWorldGiveAsync(TSPlayer executor, List<string> parts)
+        {
+            if (parts.Count < 2)
+            {
+                executor.SendErrorMessage("Penggunaan: /give <item> <player> [stack] atau /give <player> <item> [stack]");
+                return;
+            }
+
+            var worlds = await FetchAllWorldSnapshotsAsync();
+            string? candidatePlayer = null;
+            string? candidateItem = null;
+            WorldStatusSnapshot? targetWorld = null;
+
+            string p1 = parts[1];
+            var worldForP1 = worlds.FirstOrDefault(w => w.OnlinePlayerNames.Any(n => n.Equals(p1, StringComparison.OrdinalIgnoreCase)));
+            if (worldForP1 != null)
+            {
+                candidatePlayer = p1;
+                candidateItem = parts[0];
+                targetWorld = worldForP1;
+            }
+            else
+            {
+                string p0 = parts[0];
+                var worldForP0 = worlds.FirstOrDefault(w => w.OnlinePlayerNames.Any(n => n.Equals(p0, StringComparison.OrdinalIgnoreCase)));
+                if (worldForP0 != null)
+                {
+                    candidatePlayer = p0;
+                    candidateItem = parts[1];
+                    targetWorld = worldForP0;
+                }
+            }
+
+            if (candidatePlayer == null || candidateItem == null || targetWorld == null)
+            {
+                executor.SendErrorMessage($"Player '{parts[1]}' (atau '{parts[0]}') tidak ditemukan di world manapun.");
+                return;
+            }
+
+            var items = FindItems(candidateItem);
+            if (items.Count == 0)
+            {
+                executor.SendErrorMessage($"Item '{candidateItem}' tidak ditemukan.");
+                return;
+            }
+            var item = items[0];
+            int stack = parts.Count > 2 && int.TryParse(parts[2], out int s) && s > 0 ? Math.Min(s, item.maxStack) : item.maxStack;
+
+            executor.SendInfoMessage($"[MultiWorld] Mengirim {stack}x {item.Name} ke {candidatePlayer} di world '{targetWorld.DisplayName}'...");
+
+            IpcResponse res;
+            if (IsChildProcess)
+            {
+                res = await MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                {
+                    Action = "remote_give",
+                    WorldId = targetWorld.Id,
+                    PlayerName = candidatePlayer,
+                    AdminSubAction = item.type.ToString(),
+                    Port = stack
+                });
+            }
+            else
+            {
+                if (targetWorld.IsHub)
+                {
+                    var hubPlayer = TSPlayer.FindByName(candidatePlayer).FirstOrDefault();
+                    if (hubPlayer != null && hubPlayer.Active)
+                    {
+                        _mainThreadQueue.Enqueue(() =>
+                        {
+                            hubPlayer.GiveItem(item.type, stack);
+                            hubPlayer.SendSuccessMessage($"[c/38bdf8:[SERVER]] Kamu menerima {stack}x {item.Name}!");
+                        });
+                        executor.SendSuccessMessage($"[MultiWorld] Berhasil memberikan {stack}x {item.Name} kepada {hubPlayer.Name} di Hub.");
+                        return;
+                    }
+                    executor.SendErrorMessage("Player ada di Hub tapi tidak aktif.");
+                    return;
+                }
+
+                var targets = ProcessManager?.GetRunningCallbackTargets(null) ?? new List<(string, int)>();
+                var child = targets.FirstOrDefault(t => t.WorldId.Equals(targetWorld.Id, StringComparison.OrdinalIgnoreCase));
+                if (child.CallbackPort <= 0)
+                {
+                    executor.SendErrorMessage($"World '{targetWorld.Id}' tidak online.");
+                    return;
+                }
+
+                res = await MultiWorldIpcClient.SendAsync(child.CallbackPort, new IpcRequest
+                {
+                    Action = "remote_give",
+                    WorldId = targetWorld.Id,
+                    PlayerName = candidatePlayer,
+                    AdminSubAction = item.type.ToString(),
+                    Port = stack
+                });
+            }
+
+            if (res.Success)
+            {
+                executor.SendSuccessMessage($"[MultiWorld] {res.Message}");
+            }
+            else
+            {
+                executor.SendErrorMessage($"[MultiWorld] Gagal give lintas-world: {res.Message}");
+            }
+        }
+
+        public static async Task ExecuteRemoteCommandAsync(TSPlayer executor, string targetWorld, string command)
+        {
+            if (string.IsNullOrWhiteSpace(targetWorld) || string.IsNullOrWhiteSpace(command)) return;
+
+            if (IsChildProcess)
+            {
+                var res = await MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+                {
+                    Action = "remote_exec",
+                    WorldId = targetWorld,
+                    FormattedMessage = command
+                });
+                if (res.Success) executor.SendSuccessMessage($"[MultiWorld] {res.Message}");
+                else executor.SendErrorMessage($"[MultiWorld] {res.Message}");
+                return;
+            }
+
+            if (string.Equals(targetWorld, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                _mainThreadQueue.Enqueue(() => Commands.HandleCommand(TSPlayer.Server, command));
+                var targets = ProcessManager?.GetRunningCallbackTargets(null) ?? new List<(string, int)>();
+                foreach (var t in targets)
+                {
+                    _ = MultiWorldIpcClient.SendAsync(t.CallbackPort, new IpcRequest
+                    {
+                        Action = "remote_exec",
+                        WorldId = targetWorld,
+                        FormattedMessage = command
+                    }, 3000);
+                }
+                executor.SendSuccessMessage($"[MultiWorld] Perintah '{command}' disebarkan ke Hub dan semua child world.");
+                return;
+            }
+
+            if (string.Equals(targetWorld, Config.HubWorldId, StringComparison.OrdinalIgnoreCase))
+            {
+                _mainThreadQueue.Enqueue(() => Commands.HandleCommand(TSPlayer.Server, command));
+                executor.SendSuccessMessage($"[MultiWorld] Perintah '{command}' dijalankan di Hub.");
+                return;
+            }
+
+            var childTargets = ProcessManager?.GetRunningCallbackTargets(null) ?? new List<(string, int)>();
+            var child = childTargets.FirstOrDefault(t => t.WorldId.Equals(targetWorld, StringComparison.OrdinalIgnoreCase));
+            if (child.CallbackPort <= 0)
+            {
+                executor.SendErrorMessage($"World '{targetWorld}' tidak sedang online.");
+                return;
+            }
+
+            var resp = await MultiWorldIpcClient.SendAsync(child.CallbackPort, new IpcRequest
+            {
+                Action = "remote_exec",
+                WorldId = targetWorld,
+                FormattedMessage = command
+            }, 3000);
+
+            if (resp.Success) executor.SendSuccessMessage($"[MultiWorld] {resp.Message}");
+            else executor.SendErrorMessage($"[MultiWorld] {resp.Message}");
+        }
+
+        private static List<string> ParseCommandArguments(string input)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrWhiteSpace(input)) return list;
+            bool inQuotes = false;
+            var current = new StringBuilder();
+            for (int i = 0; i < input.Length; i++)
+            {
+                char c = input[i];
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                }
+                else if (char.IsWhiteSpace(c) && !inQuotes)
+                {
+                    if (current.Length > 0)
+                    {
+                        list.Add(current.ToString());
+                        current.Clear();
+                    }
+                }
+                else
+                {
+                    current.Append(c);
+                }
+            }
+            if (current.Length > 0)
+            {
+                list.Add(current.ToString());
+            }
+            return list;
         }
 
         #endregion

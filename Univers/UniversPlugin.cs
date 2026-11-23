@@ -29,6 +29,7 @@ using Univers.Housing;
 using Univers.Survival;
 using Skynomi.Ranks;
 using Skynomi.Economy;
+using Univers.Chat;
 
 namespace Univers
 {
@@ -105,7 +106,12 @@ namespace Univers
                 // [9] Modul Survival Don't Starve RPG (Univers)
                 SurvivalModule.Initialize(savePath);
 
-                TShock.Log.ConsoleInfo("[Univers Core] 9 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
+                // [10] Modul Chat Mentions & Auto-AFK (Univers)
+                var chatMod = new ChatModule();
+                chatMod.Initialize();
+                ServerApi.Hooks.Update.Register(this, OnUpdate);
+
+                TShock.Log.ConsoleInfo("[Univers Core] 10 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
             }
             catch (Exception ex)
             {
@@ -118,7 +124,9 @@ namespace Univers
             if (disposing)
             {
                 GeneralHooks.ReloadEvent -= OnReload;
+                try { ServerApi.Hooks.Update.Deregister(this, OnUpdate); } catch { }
 
+                try { ChatModule.Instance?.Dispose(); } catch { }
                 try { SurvivalModule.Dispose(); } catch { }
                 try { HousingModule.Dispose(); } catch { }
                 try { MultiWorldModule.Dispose(); } catch { }
@@ -132,6 +140,15 @@ namespace Univers
             base.Dispose(disposing);
         }
 
+        private void OnUpdate(EventArgs args)
+        {
+            try
+            {
+                ChatModule.PumpMainThread();
+            }
+            catch { }
+        }
+
         private void OnReload(ReloadEventArgs e)
         {
             try
@@ -143,6 +160,7 @@ namespace Univers
                 MultiWorldModule.Reload();
                 HousingModule.Reload();
                 SurvivalModule.Reload();
+                ChatModule.Instance?.Reload(e);
                 TShock.Log.ConsoleInfo("[Univers Core] Konfigurasi seluruh modul berhasil dimuat ulang.");
             }
             catch (Exception ex)

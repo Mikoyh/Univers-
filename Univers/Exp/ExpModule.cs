@@ -71,6 +71,7 @@ namespace Univers.Exp
         {
             var npc = e.npc;
             if (npc == null || npc.friendly || npc.lifeMax <= 5) return;
+            if (npc.boss || BossContributionTracker.IsBossOrPart(npc)) return;
 
             int lastHitPlayerIndex = npc.lastInteraction;
             if (lastHitPlayerIndex < 0 || lastHitPlayerIndex >= TShock.Players.Length) return;

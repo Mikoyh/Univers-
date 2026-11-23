@@ -40,6 +40,11 @@ namespace Skynomi.Ranks
                 HelpText = "Melihat daftar boss Terraria yang telah kamu kalahkan secara personal."
             });
 
+            Commands.ChatCommands.Add(new Command("skynomi.rank.use", CmdBossContribution, "bosscontri", "contri", "bossdamage")
+            {
+                HelpText = "Melihat damage kontribusi kamu pada boss yang sedang aktif di dunia."
+            });
+
             Commands.ChatCommands.Add(new Command("skynomi.rank.admin", CmdSetRank, "setrank")
             {
                 HelpText = "Admin: /setrank <player> <rankIndex> - Mengubah rank pemain secara paksa."
@@ -94,22 +99,22 @@ namespace Skynomi.Ranks
 
             player.SendMessage($"=== STATUS KASTA COSMIC: {rank.Prefix} ===", Color.Gold);
             player.SendMessage($"  Level Karakter   : {level} / Cap {rank.MaxLevelCap} (Skala 1-1000)", Color.Yellow);
-            player.SendMessage($"• Dompet Shard     : {EconomyApi.FormatColored(currentCredits)} / Limit {EconomyApi.FormatColored(rank.MaxMoneyLimitShards)} (Bank: {EconomyApi.FormatColored(currentBank)})", Color.Goldenrod);
-            player.SendMessage($"• EXP Multiplier   : {rank.ExpMultiplier:F2}x Bonus EXP Server", Color.GreenYellow);
-            player.SendMessage($"• Total Playtime   : {formattedPlaytime} ({minutes}m / {data.PlaytimeSeconds}s)", Color.Aqua);
-            player.SendMessage($"• Boss Personal    : {data.DefeatedBosses.Count} Boss Telah Dikalahkan", Color.LightGreen);
+            player.SendMessage($" - Dompet Shard    : {EconomyApi.FormatColored(currentCredits)} / Limit {EconomyApi.FormatColored(rank.MaxMoneyLimitShards)} (Bank: {EconomyApi.FormatColored(currentBank)})", Color.Goldenrod);
+            player.SendMessage($" - EXP Multiplier  : {rank.ExpMultiplier:F2}x Bonus EXP Server", Color.GreenYellow);
+            player.SendMessage($" - Total Playtime  : {formattedPlaytime} ({minutes}m / {data.PlaytimeSeconds}s)", Color.Aqua);
+            player.SendMessage($" - Boss Personal   : {data.DefeatedBosses.Count} Boss Telah Dikalahkan", Color.LightGreen);
 
             if (data.HasJobSelected)
             {
-                player.SendMessage($"• Status Jobs      : Aktif Mendaftar ({data.JobsCompleted} Misi Selesai)", Color.Orange);
+                player.SendMessage($" - Status Jobs     : Aktif Mendaftar ({data.JobsCompleted} Misi Selesai)", Color.Orange);
             }
             else
             {
-                player.SendMessage($"• Status Jobs      : Belum Mendaftar Job (Bebas Syarat Pekerjaan)", Color.Gray);
+                player.SendMessage($" - Status Jobs     : Belum Mendaftar Job (Bebas Syarat Pekerjaan)", Color.Gray);
             }
 
-            player.SendMessage($"• Element Mastery  : {data.ElementTagsCount} Tags Dipicu | {data.ElementCombosCount} Dual Combos Berhasil", Color.MediumPurple);
-            player.SendMessage($"• Akses Item Tier  : Maksimal Tier {rank.MaxItemTierAllowed}", Color.LightPink);
+            player.SendMessage($" - Element Mastery : {data.ElementTagsCount} Tags Dipicu | {data.ElementCombosCount} Dual Combos Berhasil", Color.MediumPurple);
+            player.SendMessage($" - Akses Item Tier : Maksimal Tier {rank.MaxItemTierAllowed}", Color.LightPink);
             player.SendMessage($"Ketik /rankup untuk mencoba naik rank atau /benefit untuk melihat rekap keuntungan!", Color.LightYellow);
         }
 
@@ -197,31 +202,31 @@ namespace Skynomi.Ranks
                 string reqMoneyStr = EconomyApi.FormatColored(targetRank.RankUpCostShards);
 
                 player.SendErrorMessage($"[ X SYARAT BELUM CUKUP UNTUK NAIK KE {targetRank.Name} ]:");
-                player.SendMessage($"  • Level EXP (Skala 1-1000): {currentLevel}/{targetRank.MinLevel} " + (levelPass ? "[ OK ]" : "[ X ]"), levelPass ? Color.Green : Color.Red);
-                player.SendMessage($"  • Total Playtime : {curPlaytime} / {reqPlaytime} " + (playtimePass ? "[ OK ]" : "[ X ]"), playtimePass ? Color.Green : Color.Red);
-                player.SendMessage($"  • Biaya Shard    : {curMoneyStr} / {reqMoneyStr} " + (moneyPass ? "[ OK ]" : "[ X ]"), moneyPass ? Color.Green : Color.Red);
+                player.SendMessage($"  - Level EXP (Skala 1-1000): {currentLevel}/{targetRank.MinLevel} " + (levelPass ? "[ OK ]" : "[ X ]"), levelPass ? Color.Green : Color.Red);
+                player.SendMessage($"  - Total Playtime : {curPlaytime} / {reqPlaytime} " + (playtimePass ? "[ OK ]" : "[ X ]"), playtimePass ? Color.Green : Color.Red);
+                player.SendMessage($"  - Biaya Shard    : {curMoneyStr} / {reqMoneyStr} " + (moneyPass ? "[ OK ]" : "[ X ]"), moneyPass ? Color.Green : Color.Red);
 
                 if (targetRank.RequiredBosses.Count > 0)
                 {
-                    player.SendMessage($"  • Boss Wajib ({targetRank.RequiredBosses.Count} Boss): " + (bossesPass ? "[ OK: SEMUA KALAH ]" : $"[ X BELUM LENGKAP ({missingBosses.Count} Tersisa): {string.Join(", ", missingBosses)}]"), bossesPass ? Color.Green : Color.Red);
+                    player.SendMessage($"  - Boss Wajib ({targetRank.RequiredBosses.Count} Boss): " + (bossesPass ? "[ OK: SEMUA KALAH ]" : $"[ X BELUM LENGKAP ({missingBosses.Count} Tersisa): {string.Join(", ", missingBosses)}]"), bossesPass ? Color.Green : Color.Red);
                 }
 
                 if (data.HasJobSelected)
                 {
-                    player.SendMessage($"  • Pengerjaan Jobs : {data.JobsCompleted}/{targetRank.MinJobsCompleted} Misi " + (jobsPass ? "[ OK ]" : "[ X ]"), jobsPass ? Color.Green : Color.Red);
+                    player.SendMessage($"  - Pengerjaan Jobs : {data.JobsCompleted}/{targetRank.MinJobsCompleted} Misi " + (jobsPass ? "[ OK ]" : "[ X ]"), jobsPass ? Color.Green : Color.Red);
                 }
                 else
                 {
-                    player.SendMessage($"  • Pengerjaan Jobs : Bebas Syarat [ OK: TIDAK DAFTAR JOB ]", Color.LightGreen);
+                    player.SendMessage($"  - Pengerjaan Jobs : Bebas Syarat [ OK: TIDAK DAFTAR JOB ]", Color.LightGreen);
                 }
 
                 if (targetRank.MinElementTags > 0)
                 {
-                    player.SendMessage($"  • Element Tags Terpicu : {data.ElementTagsCount}/{targetRank.MinElementTags}x " + (tagsPass ? "[ OK ]" : "[ X ]"), tagsPass ? Color.Green : Color.Red);
+                    player.SendMessage($"  - Element Tags Terpicu : {data.ElementTagsCount}/{targetRank.MinElementTags}x " + (tagsPass ? "[ OK ]" : "[ X ]"), tagsPass ? Color.Green : Color.Red);
                 }
                 if (targetRank.MinElementCombos > 0)
                 {
-                    player.SendMessage($"  • Element Combos Terpicu : {data.ElementCombosCount}/{targetRank.MinElementCombos}x " + (combosPass ? "[ OK ]" : "[ X ]"), combosPass ? Color.Green : Color.Red);
+                    player.SendMessage($"  - Element Combos Terpicu : {data.ElementCombosCount}/{targetRank.MinElementCombos}x " + (combosPass ? "[ OK ]" : "[ X ]"), combosPass ? Color.Green : Color.Red);
                 }
             }
         }
@@ -239,8 +244,8 @@ namespace Skynomi.Ranks
                 var r = RankModule.Config.GetRankByIndex(targetIdx);
                 args.Player.SendMessage($"=== REKAP BENEFIT KASTA COSMIC: {r.Prefix} ===", Color.Gold);
                 args.Player.SendMessage($"  Max Level Cap : {r.MaxLevelCap} | Multiplier EXP: {r.ExpMultiplier:F2}x", Color.Yellow);
-                args.Player.SendMessage($"• Limit Dompet  : {EconomyApi.FormatColored(r.MaxMoneyLimitShards)} | Biaya: {EconomyApi.FormatColored(r.RankUpCostShards)}", Color.Goldenrod);
-                args.Player.SendMessage($"• Item Tier Max : Tier {r.MaxItemTierAllowed}", Color.LightPink);
+                args.Player.SendMessage($" - Limit Dompet  : {EconomyApi.FormatColored(r.MaxMoneyLimitShards)} | Biaya: {EconomyApi.FormatColored(r.RankUpCostShards)}", Color.Goldenrod);
+                args.Player.SendMessage($" - Item Tier Max : Tier {r.MaxItemTierAllowed}", Color.LightPink);
                 if (r.Benefits != null && r.Benefits.Count > 0)
                 {
                     args.Player.SendMessage("  Keuntungan (Benefits):", Color.LightGreen);
@@ -295,6 +300,54 @@ namespace Skynomi.Ranks
             else
             {
                 player.SendMessage(string.Join(", ", data.DefeatedBosses), Color.LightGreen);
+            }
+            player.SendInfoMessage($"[ INFO ] Syarat /rankup: Minimal kontribusi damage ke boss adalah {RankModule.Config.MinBossContributionPercent:F0}% (Anti-Gendong). Ketik /contri saat boss aktif.");
+        }
+
+        private static void CmdBossContribution(CommandArgs args)
+        {
+            var player = args.Player;
+            if (!player.IsLoggedIn)
+            {
+                player.SendErrorMessage("Kamu harus login akun TShock untuk melihat kontribusi boss.");
+                return;
+            }
+
+            var fights = BossContributionTracker.ActiveFights.Values.ToList();
+            if (fights.Count == 0)
+            {
+                player.SendInfoMessage("[ INFO ] Tidak ada pertarungan Boss yang sedang berlangsung saat ini.");
+                return;
+            }
+
+            double minReq = RankModule.Config.MinBossContributionPercent;
+            foreach (var f in fights)
+            {
+                long totalDmg = f.GetTotalDamage();
+                long myDmg = f.PlayerDamage.TryGetValue(player.Account.Name, out long d) ? d : 0;
+                double myPct = totalDmg > 0 ? ((double)myDmg / totalDmg * 100.0) : 0.0;
+
+                player.SendMessage($"=== [ STATUS KONTRIBUSI: {f.BossDisplayName} ] ===", Color.Gold);
+                player.SendInfoMessage($"Total Damage Terkumpul: {totalDmg:N0} DMG | Peserta: {f.PlayerDamage.Count}");
+
+                string statusColor = myPct >= minReq ? "[c/22c55e:[ QUALIFIED (>= " + minReq.ToString("F0") + "%) ]]" : $"[c/ef4444:[ BUTUH {minReq - myPct:F1}% LAGI ]]";
+                player.SendMessage($"Damage Kamu: {myDmg:N0} DMG ({myPct:F1}%) -> Status: {statusColor}", Color.White);
+
+                var topContributors = f.PlayerDamage
+                    .OrderByDescending(kv => kv.Value)
+                    .Take(3)
+                    .ToList();
+
+                player.SendInfoMessage("Top Damager:");
+                int rankNum = 1;
+                foreach (var top in topContributors)
+                {
+                    string pName = f.PlayerDisplayNames.TryGetValue(top.Key, out var n) ? n : top.Key;
+                    double pct = totalDmg > 0 ? ((double)top.Value / totalDmg * 100.0) : 0.0;
+                    string tag = rankNum == 1 ? "[ MVP ]" : $"[ #{rankNum} ]";
+                    player.SendMessage($"  {tag} {pName}: {top.Value:N0} DMG ({pct:F1}%)", rankNum == 1 ? Color.Gold : Color.LightGray);
+                    rankNum++;
+                }
             }
         }
 

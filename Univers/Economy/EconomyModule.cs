@@ -9,6 +9,7 @@ using TShockAPI.Hooks;
 using Univers;
 using Univers.Modules;
 using Univers.Exp;
+using Skynomi.Ranks;
 
 namespace Skynomi.Economy
 {
@@ -66,6 +67,7 @@ namespace Skynomi.Economy
         private void OnNpcKilledDirect(NpcKilledEventArgs e)
         {
             if (e.npc == null || e.npc.friendly || e.npc.lifeMax < 1000) return;
+            if (e.npc.boss || BossContributionTracker.IsBossOrPart(e.npc)) return;
 
             int killerId = e.npc.lastInteraction;
             if (killerId < 0 || killerId >= TShock.Players.Length) return;

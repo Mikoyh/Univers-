@@ -3,6 +3,10 @@
   "Enable Item Tier Restriction": true,
   "Enable Wallet Balance Cap Per Rank": true,
   "Broadcast When Player Ranks Up": true,
+  "Min Boss Contribution Percent For Rank": 50.0,
+  "Enable Boss Contribution Recap": true,
+  "Boss MVP Shard Bonus Percent": 20.0,
+  "Boss MVP Exp Bonus Percent": 25.0,
   "Cosmic Ranks List": [
     {
       "Index": 0,

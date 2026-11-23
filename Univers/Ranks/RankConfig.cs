@@ -49,6 +49,18 @@ namespace Skynomi.Ranks
         [JsonProperty("Broadcast When Player Ranks Up")]
         public bool BroadcastRankUp { get; set; } = true;
 
+        [JsonProperty("Min Boss Contribution Percent For Rank")]
+        public double MinBossContributionPercent { get; set; } = 50.0;
+
+        [JsonProperty("Enable Boss Contribution Recap")]
+        public bool EnableBossContributionRecap { get; set; } = true;
+
+        [JsonProperty("Boss MVP Shard Bonus Percent")]
+        public double BossMvpShardBonusPercent { get; set; } = 20.0;
+
+        [JsonProperty("Boss MVP Exp Bonus Percent")]
+        public double BossMvpExpBonusPercent { get; set; } = 25.0;
+
         [JsonProperty("Cosmic Ranks List")]
         public List<RankEntry> Ranks { get; set; } = new List<RankEntry>
         {

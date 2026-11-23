@@ -37,6 +37,7 @@ namespace Univers.MultiWorld
         public int IdleSeconds { get; set; }
         public string PermissionRequired { get; set; } = string.Empty;
         public bool WorldFileExists { get; set; }
+        public int ControlIpcPort { get; set; }
     }
 
     public class IpcRequest

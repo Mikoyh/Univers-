@@ -25,7 +25,8 @@ namespace Univers.MultiWorld
             Commands.ChatCommands.Add(new Command("univers.mw.use", GlobalOnlineCommand, "players", "glist"));
             Commands.ChatCommands.Add(new Command("univers.mw.use", SurvivalShortcutCommand, "survival", "surv"));
             Commands.ChatCommands.Add(new Command("univers.mw.use", RandomTeleportCommand, "rtp", "randomtp"));
-
+            Commands.ChatCommands.Add(new Command("univers.mw.admin", MwGiveCommand, "mwgive", "mgive"));
+            Commands.ChatCommands.Add(new Command("univers.mw.admin", MwExecCommand, "mwexec", "mexec"));
         }
 
         private static void GlobalOnlineCommand(CommandArgs args)
@@ -198,6 +199,28 @@ namespace Univers.MultiWorld
                             player.SendErrorMessage($"[MultiWorld] {resetMsg}");
                         }
                     }
+                    break;
+
+                case "give":
+                    if (!RequireAdmin(player)) return;
+                    if (args.Parameters.Count < 3)
+                    {
+                        player.SendErrorMessage("Format: /mw give <player> <item> [stack] atau /mw give <item> <player> [stack]");
+                        return;
+                    }
+                    _ = MultiWorldModule.ExecuteSmartCrossWorldGiveAsync(player, args.Parameters.Skip(1).ToList());
+                    break;
+
+                case "exec":
+                case "cmd":
+                case "run":
+                    if (!RequireAdmin(player)) return;
+                    if (args.Parameters.Count < 3)
+                    {
+                        player.SendErrorMessage("Format: /mw exec <world|all> <command>");
+                        return;
+                    }
+                    _ = MultiWorldModule.ExecuteRemoteCommandAsync(player, args.Parameters[1], string.Join(" ", args.Parameters.Skip(2)));
                     break;
 
                 case "help":
@@ -555,6 +578,7 @@ namespace Univers.MultiWorld
             player.SendInfoMessage("/mw online | /players - Lihat daftar player online di seluruh world");
             player.SendInfoMessage("/mw tp <id> | /world <id> - Pindah ke world (otomatis membangunkan world yang Sleep)");
             player.SendInfoMessage("/lobby | /hub - Kembali ke world Hub utama");
+            player.SendInfoMessage("/mwgive <player> <item> [stack] - Beri item ke player di world manapun (lintas world)");
             if (player.HasPermission("univers.mw.admin"))
             {
                 player.SendMessage("[Admin] /mw create <id> [small|medium|large] [classic|expert|master|journey] [random|corrupt|crimson] [seed]", Color.Yellow);
@@ -563,7 +587,30 @@ namespace Univers.MultiWorld
                 player.SendMessage("[Admin] /mw autosleep <id> <on|off|menit> - Atur Auto-Sleep saat world kosong", Color.Yellow);
                 player.SendMessage("[Admin] /mw perm <id> <permission|none> - Batasi akses masuk world", Color.Yellow);
                 player.SendMessage("[Admin] /mw resetssc [player] - Reset SSC player yang terlanjur tembus ke starter awal", Color.Yellow);
+                player.SendMessage("[Admin] /mw exec <world|all> <cmd> - Jalankan perintah TShock di world tujuan", Color.Yellow);
             }
+        }
+
+        private static void MwGiveCommand(CommandArgs args)
+        {
+            if (args.Parameters.Count < 2)
+            {
+                args.Player.SendErrorMessage("Penggunaan: /mwgive <player> <item> [stack] atau /mwgive <item> <player> [stack]");
+                return;
+            }
+            _ = MultiWorldModule.ExecuteSmartCrossWorldGiveAsync(args.Player, args.Parameters);
+        }
+
+        private static void MwExecCommand(CommandArgs args)
+        {
+            if (args.Parameters.Count < 2)
+            {
+                args.Player.SendErrorMessage("Penggunaan: /mwexec <world|all> <command>");
+                return;
+            }
+            string targetWorld = args.Parameters[0];
+            string cmdToRun = string.Join(" ", args.Parameters.Skip(1));
+            _ = MultiWorldModule.ExecuteRemoteCommandAsync(args.Player, targetWorld, cmdToRun);
         }
     }
 }
