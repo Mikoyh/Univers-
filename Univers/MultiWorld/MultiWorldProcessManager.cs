@@ -840,7 +840,8 @@ namespace Univers.MultiWorld
             string sourcePlugins = Path.Combine(AppContext.BaseDirectory, "ServerPlugins");
             if (!Directory.Exists(sourcePlugins)) return;
 
-            var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var excludedExact = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var excludedPrefixes = new List<string>();
             if (excludedPlugins != null)
             {
                 foreach (var entry in excludedPlugins)
@@ -848,12 +849,21 @@ namespace Univers.MultiWorld
                     if (!string.IsNullOrWhiteSpace(entry))
                     {
                         string clean = Path.GetFileName(entry.Trim());
-                        if (!string.IsNullOrWhiteSpace(clean))
+                        if (string.IsNullOrWhiteSpace(clean)) continue;
+                        if (clean.EndsWith("*", StringComparison.Ordinal))
                         {
-                            excluded.Add(clean);
+                            string prefix = clean.TrimEnd('*');
+                            if (!string.IsNullOrWhiteSpace(prefix))
+                            {
+                                excludedPrefixes.Add(prefix);
+                            }
+                        }
+                        else
+                        {
+                            excludedExact.Add(clean);
                             if (!clean.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
                             {
-                                excluded.Add(clean + ".dll");
+                                excludedExact.Add(clean + ".dll");
                             }
                         }
                     }
@@ -878,7 +888,7 @@ namespace Univers.MultiWorld
 
             try
             {
-                SyncPluginDirectory(sourcePlugins, targetPlugins, excluded, isRoot: true);
+                SyncPluginDirectory(sourcePlugins, targetPlugins, excludedExact, excludedPrefixes, isRoot: true);
             }
             catch (Exception ex)
             {
@@ -886,7 +896,20 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static void SyncPluginDirectory(string sourceDir, string targetDir, HashSet<string>? excludedRootFiles, bool isRoot)
+        private static bool IsExcludedPluginFile(string fileName, HashSet<string>? excludedExact, List<string>? excludedPrefixes)
+        {
+            if (excludedExact != null && excludedExact.Contains(fileName)) return true;
+            if (excludedPrefixes != null)
+            {
+                foreach (var prefix in excludedPrefixes)
+                {
+                    if (fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static void SyncPluginDirectory(string sourceDir, string targetDir, HashSet<string>? excludedExact, List<string>? excludedPrefixes, bool isRoot)
         {
             Directory.CreateDirectory(targetDir);
             var expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -904,7 +927,7 @@ namespace Univers.MultiWorld
                     continue;
                 }
 
-                if (isRoot && excludedRootFiles != null && excludedRootFiles.Contains(fileName))
+                if (isRoot && IsExcludedPluginFile(fileName, excludedExact, excludedPrefixes))
                 {
                     continue;
                 }
@@ -948,7 +971,7 @@ namespace Univers.MultiWorld
             {
                 string subName = Path.GetFileName(subDir);
                 if (subName.StartsWith(".", StringComparison.Ordinal)) continue;
-                SyncPluginDirectory(subDir, Path.Combine(targetDir, subName), null, isRoot: false);
+                SyncPluginDirectory(subDir, Path.Combine(targetDir, subName), null, null, isRoot: false);
             }
         }
 
