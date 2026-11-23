@@ -258,7 +258,7 @@ namespace Univers.MultiWorld
                 var stream = session.BackendStream;
                 if (stream == null) continue;
 
-                byte[] outgoing = PrepareOutboundPacket(packet, session.ClientSlot, session.BackendSlot);
+                byte[] outgoing = PrepareOutboundPacket(session, packet, session.ClientSlot, session.BackendSlot);
                 await SendPacketAsync(stream, session.BackendWriteLock, outgoing, ct);
             }
         }
@@ -307,7 +307,7 @@ namespace Univers.MultiWorld
                     TrackBackendEntityPacket(session, packet);
                 }
 
-                byte[] toClient = PrepareOutboundPacket(packet, session.BackendSlot, session.ClientSlot);
+                byte[] toClient = PrepareOutboundPacket(session, packet, session.BackendSlot, session.ClientSlot);
                 CacheServerSelfPacket(session, toClient);
                 bool sent = await SendPacketAsync(session.ClientStream, session.ClientWriteLock, toClient, ct);
                 if (!sent)
@@ -444,7 +444,7 @@ namespace Univers.MultiWorld
                     {
                         session.CurrentWorldId = targetWorldId;
                         session.IsSwitching = false;
-                        byte[] mappedComplete = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
+                        byte[] mappedComplete = PrepareOutboundPacket(session, srvPkt, session.BackendSlot, session.ClientSlot);
                         await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedComplete, session.Cts.Token);
 
                         // Kirim Packet 12 dengan koordinat spawn (-1, -1) agar server memakai titik spawn world BARU (bukan koordinat lobby!)
@@ -452,7 +452,7 @@ namespace Univers.MultiWorld
                         lock (session.CacheLock) cachedSpawn = session.PlayerSpawnPacket;
                         if (cachedSpawn != null && cachedSpawn.Length >= 8)
                         {
-                            byte[] mappedSpawn12 = PrepareOutboundPacket(cachedSpawn, session.ClientSlot, newBackendSlot);
+                            byte[] mappedSpawn12 = PrepareOutboundPacket(session, cachedSpawn, session.ClientSlot, newBackendSlot);
                             BinaryPrimitives.WriteInt16LittleEndian(mappedSpawn12.AsSpan(4, 2), -1);
                             BinaryPrimitives.WriteInt16LittleEndian(mappedSpawn12.AsSpan(6, 2), -1);
                             await SendPacketAsync(newStream, session.BackendWriteLock, mappedSpawn12, session.Cts.Token);
@@ -462,7 +462,7 @@ namespace Univers.MultiWorld
                         break;
                     }
 
-                    byte[] mapped = PrepareOutboundPacket(srvPkt, session.BackendSlot, session.ClientSlot);
+                    byte[] mapped = PrepareOutboundPacket(session, srvPkt, session.BackendSlot, session.ClientSlot);
                     await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mapped, session.Cts.Token);
 
                     if (srvId == 7 && !sentTileRequest) // WorldInfo -> baca koordinat spawn asli & minta section spawn!
@@ -568,7 +568,7 @@ namespace Univers.MultiWorld
 
             if (infoPkt != null)
             {
-                await newStream.WriteAsync(PrepareOutboundPacket(infoPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                await newStream.WriteAsync(PrepareOutboundPacket(session, infoPkt, session.ClientSlot, targetSlot), session.Cts.Token);
             }
 
             if (uuidPkt != null)
@@ -578,22 +578,22 @@ namespace Univers.MultiWorld
 
             if (hpPkt != null)
             {
-                await newStream.WriteAsync(PrepareOutboundPacket(hpPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                await newStream.WriteAsync(PrepareOutboundPacket(session, hpPkt, session.ClientSlot, targetSlot), session.Cts.Token);
             }
 
             if (manaPkt != null)
             {
-                await newStream.WriteAsync(PrepareOutboundPacket(manaPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                await newStream.WriteAsync(PrepareOutboundPacket(session, manaPkt, session.ClientSlot, targetSlot), session.Cts.Token);
             }
 
             if (buffPkt != null)
             {
-                await newStream.WriteAsync(PrepareOutboundPacket(buffPkt, session.ClientSlot, targetSlot), session.Cts.Token);
+                await newStream.WriteAsync(PrepareOutboundPacket(session, buffPkt, session.ClientSlot, targetSlot), session.Cts.Token);
             }
 
             foreach (var sp in slotPkts)
             {
-                await newStream.WriteAsync(PrepareOutboundPacket(sp, session.ClientSlot, targetSlot), session.Cts.Token);
+                await newStream.WriteAsync(PrepareOutboundPacket(session, sp, session.ClientSlot, targetSlot), session.Cts.Token);
             }
 
             // Packet 6: RequestWorldData
@@ -688,7 +688,21 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static void TrackBackendEntityPacket(ProxySession session, byte[] packet)
+        private byte MapBackendSlotToClient(ProxySession observerSession, byte backendSlot)
+        {
+            if (backendSlot == 255) return 255;
+            if (backendSlot == observerSession.BackendSlot) return observerSession.ClientSlot;
+
+            var targetSession = FindSession(null, null, backendSlot, observerSession.CurrentWorldId);
+            if (targetSession != null)
+            {
+                return targetSession.ClientSlot;
+            }
+
+            return MapSlot(backendSlot, observerSession.BackendSlot, observerSession.ClientSlot);
+        }
+
+        private void TrackBackendEntityPacket(ProxySession session, byte[] packet)
         {
             if (packet.Length < 4) return;
             byte msgId = packet[2];
@@ -701,7 +715,7 @@ namespace Univers.MultiWorld
                     bool active = packet[4] != 0;
                     if (pid != session.BackendSlot)
                     {
-                        byte mappedPid = MapSlot(pid, session.BackendSlot, session.ClientSlot);
+                        byte mappedPid = MapBackendSlotToClient(session, pid);
                         if (active) session.ActiveOtherPlayers.Add(mappedPid);
                         else session.ActiveOtherPlayers.Remove(mappedPid);
                     }
@@ -709,19 +723,19 @@ namespace Univers.MultiWorld
                 else if (msgId == 27 && packet.Length >= 28) // SyncProjectile ([3..4]=id, [5..12]=pos, [13..20]=vel, [21..24]=knockBack, [25..26]=damage, [27]=owner)
                 {
                     short projId = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(3, 2));
-                    byte owner = MapSlot(packet[27], session.BackendSlot, session.ClientSlot);
+                    byte owner = MapBackendSlotToClient(session, packet[27]);
                     session.ActiveProjectiles.Add((projId, owner));
                 }
                 else if (msgId == 29 && packet.Length >= 6) // KillProjectile
                 {
                     short projId = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(3, 2));
-                    byte owner = MapSlot(packet[5], session.BackendSlot, session.ClientSlot);
+                    byte owner = MapBackendSlotToClient(session, packet[5]);
                     session.ActiveProjectiles.Remove((projId, owner));
                 }
             }
         }
 
-        private static byte[] PrepareOutboundPacket(byte[] packet, byte fromSlot, byte toSlot)
+        private byte[] PrepareOutboundPacket(ProxySession session, byte[] packet, byte fromSlot, byte toSlot)
         {
             if (fromSlot == toSlot || fromSlot == 255 || toSlot == 255 || packet.Length < 4)
             {
@@ -736,7 +750,7 @@ namespace Univers.MultiWorld
                 or 118 or 120 or 121 or 124 or 125 or 128 or 134 or 135 or 139 or 147 => 3,
                 65 => (packet[3] & 3) != 1 ? 4 : -1, // Teleport: flag bits 0..1 == 1 adalah NPC teleport, bukan player
                 22 or 29 => 5,
-                27 => 27, // SyncProjectile: owner byte ada di offset 27 (setelah identity, pos, vel, knockBack, damage)
+                27 => 27, // SyncProjectile: owner byte ada di offset 27
                 _ => -1
             };
 
@@ -746,7 +760,10 @@ namespace Univers.MultiWorld
             }
 
             byte current = packet[slotOffset];
-            byte mapped = MapSlot(current, fromSlot, toSlot);
+            byte mapped = (fromSlot == session.BackendSlot)
+                ? MapBackendSlotToClient(session, current)
+                : MapSlot(current, fromSlot, toSlot);
+
             if (mapped == current) return packet;
 
             byte[] copy = (byte[])packet.Clone();
