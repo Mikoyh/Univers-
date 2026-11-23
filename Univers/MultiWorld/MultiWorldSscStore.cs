@@ -20,6 +20,10 @@ namespace Univers.MultiWorld
         public string AccountName { get; set; } = string.Empty;
         public string PlayerName { get; set; } = string.Empty;
         public string LastWorldId { get; set; } = string.Empty;
+        public string ActiveWorldId { get; set; } = string.Empty;
+        public DateTime ActiveWorldEnteredUtc { get; set; } = DateTime.MinValue;
+        public bool LeaveSynced { get; set; } = true;
+        public long Sequence { get; set; } = 0;
         public string SnapshotJson { get; set; } = string.Empty;
         public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     }
@@ -49,17 +53,58 @@ namespace Univers.MultiWorld
             return (accountName ?? string.Empty).Trim().ToLowerInvariant();
         }
 
-        public void Save(string accountName, string playerName, string worldId, string snapshotJson)
+        public void MarkEnteredWorld(string accountName, string playerName, string worldId)
         {
-            if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(snapshotJson)) return;
+            if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(worldId)) return;
 
             string key = NormalizeKey(accountName);
+            var existing = Get(accountName);
             var rec = new SscCharacterRecord
             {
                 AccountKey = key,
                 AccountName = accountName.Trim(),
                 PlayerName = string.IsNullOrWhiteSpace(playerName) ? accountName.Trim() : playerName.Trim(),
-                LastWorldId = worldId ?? string.Empty,
+                LastWorldId = existing?.LastWorldId ?? string.Empty,
+                ActiveWorldId = worldId.Trim(),
+                ActiveWorldEnteredUtc = DateTime.UtcNow,
+                LeaveSynced = false,
+                Sequence = (existing?.Sequence ?? 0) + 1,
+                SnapshotJson = existing?.SnapshotJson ?? string.Empty,
+                UpdatedUtc = existing?.UpdatedUtc ?? DateTime.UtcNow
+            };
+
+            _cache[key] = rec;
+
+            lock (_lock)
+            {
+                try
+                {
+                    _records.Upsert(rec);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        public void Save(string accountName, string playerName, string worldId, string snapshotJson, bool markLeaveSynced = false)
+        {
+            if (string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(snapshotJson)) return;
+
+            string key = NormalizeKey(accountName);
+            var existing = Get(accountName);
+            string resolvedWorld = !string.IsNullOrWhiteSpace(worldId) ? worldId.Trim() : (existing?.LastWorldId ?? string.Empty);
+
+            var rec = new SscCharacterRecord
+            {
+                AccountKey = key,
+                AccountName = accountName.Trim(),
+                PlayerName = string.IsNullOrWhiteSpace(playerName) ? accountName.Trim() : playerName.Trim(),
+                LastWorldId = resolvedWorld,
+                ActiveWorldId = !string.IsNullOrWhiteSpace(resolvedWorld) ? resolvedWorld : (existing?.ActiveWorldId ?? string.Empty),
+                ActiveWorldEnteredUtc = existing?.ActiveWorldEnteredUtc ?? DateTime.UtcNow,
+                LeaveSynced = markLeaveSynced || (existing?.LeaveSynced ?? false),
+                Sequence = (existing?.Sequence ?? 0) + 1,
                 SnapshotJson = snapshotJson,
                 UpdatedUtc = DateTime.UtcNow
             };

@@ -38,6 +38,11 @@ namespace Univers.Survival
         public DateTime LastEatTriggerUtc { get; set; } = DateTime.MinValue;
         public DateTime LastItemDropUtc { get; set; } = DateTime.MinValue;
         public int LastItemDropType { get; set; }
+        public DateTime LastTrashUtc { get; set; } = DateTime.MinValue;
+        public int LastTrashType { get; set; }
+        public DateTime LastChestMoveUtc { get; set; } = DateTime.MinValue;
+        public DateTime LastItemUseUtc { get; set; } = DateTime.MinValue;
+        public DateTime LastBuffOrHpUtc { get; set; } = DateTime.MinValue;
 
         public int DarknessSeconds { get; set; }
         public int LastHungerStage { get; set; } = -1;   // 0=Full, 1=Normal, 2=Peckish, 3=Hungry, 4=Starving
@@ -53,13 +58,14 @@ namespace Univers.Survival
         public bool InTotalDarkness { get; set; }
         public double TargetAmbientTemp { get; set; } = 25.0;
 
-        // Tracking slot untuk anti-exploit konsumsi makanan
+        // Tracking slot (0..58 termasuk cursor) untuk anti-exploit & anti-false-trigger konsumsi makanan
         public readonly Dictionary<short, (int NetId, int Stack)> TrackedFoodSlots = new();
     }
 
     internal readonly record struct PendingFoodConsumption(
         int PlayerIndex,
         int ItemType,
+        int ExpectedMaxTotal,
         DateTime ExpiresUtc
     );
 
@@ -169,7 +175,8 @@ namespace Univers.Survival
         {
             st.TrackedFoodSlots.Clear();
             var inv = player.TPlayer.inventory;
-            for (short s = 0; s < inv.Length; s++)
+            int limit = Math.Min(inv.Length, 59); // 0..58 (termasuk slot cursor 58)
+            for (short s = 0; s < limit; s++)
             {
                 var it = inv[s];
                 if (it != null && it.type > 0 && it.stack > 0 && SurvivalFoodRegistry.TryGetFoodNutrition(it.type, out _))
@@ -177,6 +184,36 @@ namespace Univers.Survival
                     st.TrackedFoodSlots[s] = (it.type, it.stack);
                 }
             }
+        }
+
+        private static int CountTrackedFoodType(SurvivalRuntimeState st, int itemType)
+        {
+            int total = 0;
+            foreach (var kv in st.TrackedFoodSlots)
+            {
+                if (kv.Value.NetId == itemType && kv.Value.Stack > 0)
+                {
+                    total += kv.Value.Stack;
+                }
+            }
+            return total;
+        }
+
+        private static int CountFoodInInventory(Player tp, int itemType)
+        {
+            int total = 0;
+            var inv = tp.inventory;
+            if (inv == null) return 0;
+            int limit = Math.Min(inv.Length, 59); // 0..58 termasuk cursor 58
+            for (int i = 0; i < limit; i++)
+            {
+                var it = inv[i];
+                if (it != null && !it.IsAir && it.type == itemType && it.stack > 0)
+                {
+                    total += it.stack;
+                }
+            }
+            return total;
         }
 
         private static void OnPlayerGreet(GreetPlayerEventArgs args)
@@ -272,6 +309,30 @@ namespace Univers.Survival
 
             if (!States.TryGetValue(player.Index, out var st)) return;
 
+            int msgId = (int)e.MsgID;
+
+            if (msgId == 41) // PlayerAnimation
+            {
+                st.LastItemUseUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (e.MsgID == PacketTypes.PlayerBuff ||
+                msgId == 55 || // PlayerAddBuff
+                e.MsgID == PacketTypes.PlayerHp)
+            {
+                st.LastBuffOrHpUtc = DateTime.UtcNow;
+                return;
+            }
+
+            if (e.MsgID == PacketTypes.ChestItem ||
+                msgId == 85 || // ForceItemIntoNearestChest (quick-stack)
+                msgId == 133)  // FoodPlatterTryPlacing
+            {
+                st.LastChestMoveUtc = DateTime.UtcNow;
+                return;
+            }
+
             if (e.MsgID == PacketTypes.ItemDrop)
             {
                 // Catat item yang baru dijatuhkan pemain agar trik drop-item tidak dianggap makan
@@ -308,9 +369,31 @@ namespace Univers.Survival
                     byte prefix = reader.ReadByte();
                     short newNetId = reader.ReadInt16();
 
-                    if (playerId != player.Index || slot < 0 || slot >= 50) return;
+                    if (playerId != player.Index) return;
+
+                    // Slot 179 = trashItem; membuang makanan ke trash bukan makan
+                    if (slot == 179)
+                    {
+                        if (newNetId > 0 && newStack > 0)
+                        {
+                            st.LastTrashType = newNetId;
+                            st.LastTrashUtc = DateTime.UtcNow;
+                        }
+                        return;
+                    }
+
+                    // Slot 99..259 (kecuali trash 179) = piggy bank / safe / defender forge / void vault
+                    if (slot >= 99 && slot < 260)
+                    {
+                        st.LastChestMoveUtc = DateTime.UtcNow;
+                        return;
+                    }
+
+                    // Hanya pantau slot inventory 0..58 (termasuk coins 50..53, ammo 54..57, dan cursor 58)
+                    if (slot < 0 || slot > 58) return;
 
                     bool hadTracked = st.TrackedFoodSlots.TryGetValue(slot, out var oldInfo);
+                    int oldTotal = hadTracked ? CountTrackedFoodType(st, oldInfo.NetId) : 0;
 
                     if (newNetId > 0 && newStack > 0 && SurvivalFoodRegistry.TryGetFoodNutrition(newNetId, out _))
                     {
@@ -321,7 +404,7 @@ namespace Univers.Survival
                         st.TrackedFoodSlots.Remove(slot);
                     }
 
-                    // Deteksi pengurangan tepat 1 item makanan di luar chest
+                    // Deteksi pengurangan tepat 1 item makanan secara total di luar chest/pindah slot
                     if (hadTracked && player.TPlayer.chest == -1)
                     {
                         bool sameItemMinusOne = (newNetId == oldInfo.NetId && oldInfo.Stack - newStack == 1) ||
@@ -329,11 +412,16 @@ namespace Univers.Survival
 
                         if (sameItemMinusOne)
                         {
-                            // Tunggu 150ms di main thread agar jika diikuti paket ItemDrop (Q/throw) langsung batal
-                            _pendingConsumptions.Enqueue(new PendingFoodConsumption(
-                                player.Index,
-                                oldInfo.NetId,
-                                DateTime.UtcNow.AddMilliseconds(150)));
+                            int newTotal = CountTrackedFoodType(st, oldInfo.NetId);
+                            if (newTotal == oldTotal - 1)
+                            {
+                                // Tunggu 250ms di main thread agar jika pindah ke slot lain / cursor / trash / drop langsung batal
+                                _pendingConsumptions.Enqueue(new PendingFoodConsumption(
+                                    player.Index,
+                                    oldInfo.NetId,
+                                    newTotal,
+                                    DateTime.UtcNow.AddMilliseconds(250)));
+                            }
                         }
                     }
                 }
@@ -344,6 +432,23 @@ namespace Univers.Survival
         private static void OnGameUpdate(EventArgs args)
         {
             if (!_initialized) return;
+
+            DateTime frameNow = DateTime.UtcNow;
+            if (IsSurvivalActiveInCurrentWorld())
+            {
+                foreach (var player in TShock.Players)
+                {
+                    if (player == null || !player.Active || !player.IsLoggedIn || !player.RealPlayer || player.Dead) continue;
+                    if (States.TryGetValue(player.Index, out var st))
+                    {
+                        var tp = player.TPlayer;
+                        if (tp != null && (tp.controlUseItem || tp.itemAnimation > 0))
+                        {
+                            st.LastItemUseUtc = frameNow;
+                        }
+                    }
+                }
+            }
 
             ProcessPendingFoodConsumptions();
 
@@ -383,16 +488,37 @@ namespace Univers.Survival
                 if (!States.TryGetValue(player.Index, out var st)) continue;
 
                 // Anti-exploit: abaikan jika barusan menjatuhkan item tersebut (drop / buang item)
-                if (st.LastItemDropType == pending.ItemType && (now - st.LastItemDropUtc).TotalMilliseconds <= 350)
+                if (st.LastItemDropType == pending.ItemType && (now - st.LastItemDropUtc).TotalMilliseconds <= 550)
                 {
                     continue;
                 }
 
-                // Abaikan jika sedang membuka chest (memindahkan item ke chest)
-                if (player.TPlayer.chest != -1) continue;
+                // Abaikan jika item masuk ke slot trash (179)
+                if (st.LastTrashType == pending.ItemType && (now - st.LastTrashUtc).TotalMilliseconds <= 550)
+                {
+                    continue;
+                }
+
+                // Abaikan jika sedang membuka chest atau memindahkan item ke chest/piggy/safe/void bag
+                if (player.TPlayer.chest != -1 || (now - st.LastChestMoveUtc).TotalMilliseconds <= 550) continue;
+
+                // Pastikan total item tersebut di seluruh inventory (0..58 termasuk cursor) benar-benar berkurang (bukan dipindah slot!)
+                int currentTotal = CountFoodInInventory(player.TPlayer, pending.ItemType);
+                if (currentTotal > pending.ExpectedMaxTotal)
+                {
+                    continue;
+                }
+
+                // Pastikan memang ada aksi penggunaan item / buff / heal (bukan sekadar drag antar slot di mobile/PC)
+                bool usedOrBuffed = (now - st.LastItemUseUtc).TotalMilliseconds <= 1200 ||
+                                    (now - st.LastBuffOrHpUtc).TotalMilliseconds <= 1200;
+                if (!usedOrBuffed)
+                {
+                    continue;
+                }
 
                 // Debounce singkat agar tidak terhitung ganda
-                if ((now - st.LastEatTriggerUtc).TotalMilliseconds < 300) continue;
+                if ((now - st.LastEatTriggerUtc).TotalMilliseconds < 350) continue;
 
                 if (!SurvivalFoodRegistry.TryGetFoodNutrition(pending.ItemType, out var food)) continue;
 
