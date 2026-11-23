@@ -1568,10 +1568,6 @@ namespace Univers.MultiWorld
                     if (snap == null) return;
 
                     _scratchSyncPlayer ??= new Terraria.Player();
-                    _scratchSyncPlayer.bank ??= new Chest(true);
-                    _scratchSyncPlayer.bank2 ??= new Chest(true);
-                    _scratchSyncPlayer.bank3 ??= new Chest(true);
-                    _scratchSyncPlayer.bank4 ??= new Chest(true);
                     ApplySnapshotToTerrariaPlayer(_scratchSyncPlayer, snap);
 
                     var prevSlot255 = Main.player[255];
