@@ -53,6 +53,15 @@ namespace Univers.MultiWorld
         [ThreadStatic]
         private static bool _suppressRemoteRouting;
 
+        private sealed class TrackedSlotPlayer
+        {
+            public TSPlayer Player { get; init; } = null!;
+            public string PlayerName { get; set; } = string.Empty;
+            public string AccountName { get; set; } = string.Empty;
+            public int AccountId { get; set; }
+            public bool WasLoggedIn { get; set; }
+        }
+
         private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
         private static readonly ConcurrentDictionary<string, byte> _pendingEntityClearPlayers = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _recentTransfers = new(StringComparer.OrdinalIgnoreCase);
@@ -62,8 +71,57 @@ namespace Univers.MultiWorld
         private static readonly ConcurrentDictionary<string, DateTime> _sscRestoreGuardUntil = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _playerJoinedUtc = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, string> _lastSavedSscJson = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _lastMasterSyncedSscJson = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _inFlightMasterSyncs = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<int, byte> _checkedPreGreetTicket = new();
+        private static readonly ConcurrentDictionary<int, TrackedSlotPlayer> _trackedSlotPlayers = new();
         private static Terraria.Player? _scratchSyncPlayer;
+
+        private static void TrackSlotPlayer(TSPlayer? player)
+        {
+            if (player == null || player.Index < 0 || player.Index >= 255) return;
+            if (string.IsNullOrWhiteSpace(player.Name) && player.Account == null) return;
+
+            _trackedSlotPlayers.AddOrUpdate(
+                player.Index,
+                _ => new TrackedSlotPlayer
+                {
+                    Player = player,
+                    PlayerName = player.Name ?? string.Empty,
+                    AccountName = player.Account?.Name ?? string.Empty,
+                    AccountId = player.Account?.ID ?? 0,
+                    WasLoggedIn = player.IsLoggedIn && player.Account != null
+                },
+                (_, existing) =>
+                {
+                    if (!ReferenceEquals(existing.Player, player))
+                    {
+                        return new TrackedSlotPlayer
+                        {
+                            Player = player,
+                            PlayerName = player.Name ?? string.Empty,
+                            AccountName = player.Account?.Name ?? string.Empty,
+                            AccountId = player.Account?.ID ?? 0,
+                            WasLoggedIn = player.IsLoggedIn && player.Account != null
+                        };
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(player.Name))
+                    {
+                        existing.PlayerName = player.Name;
+                    }
+                    if (player.Account != null)
+                    {
+                        existing.AccountName = player.Account.Name;
+                        if (player.Account.ID > 0) existing.AccountId = player.Account.ID;
+                    }
+                    if (player.IsLoggedIn && player.Account != null)
+                    {
+                        existing.WasLoggedIn = true;
+                    }
+                    return existing;
+                });
+        }
 
         public static void SetTransferLock(string playerName, int seconds)
         {
@@ -181,6 +239,8 @@ namespace Univers.MultiWorld
             var player = e.Player;
             if (player == null || !player.Active || !player.RealPlayer) return;
 
+            TrackSlotPlayer(player);
+
             if (!Main.ServerSideCharacter)
             {
                 TShock.Log.ConsoleWarn($"[Univers.MultiWorld] '{player.Name}' login saat ServerSideCharacter=FALSE (karakter lokal Terraria diizinkan masuk). Aktifkan Enabled=true di tshock/sscconfig.json!");
@@ -191,8 +251,8 @@ namespace Univers.MultiWorld
                 return;
             }
 
-            // Jika TShock UUID auto-login memicu PlayerPostLogin di Child sebelum packet ticket diproses, klaim ticket dulu
-            if (IsChildProcess && !_pendingSscRestores.ContainsKey(player.Name))
+            // Jika TShock UUID auto-login memicu PlayerPostLogin sebelum packet ticket diproses, klaim ticket dulu
+            if (!_pendingSscRestores.ContainsKey(player.Name))
             {
                 TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
             }
@@ -205,7 +265,9 @@ namespace Univers.MultiWorld
                 string snapshotJson = string.Empty;
                 if (!IsChildProcess)
                 {
-                    snapshotJson = SscStore?.Get(player.Account.Name)?.SnapshotJson ?? string.Empty;
+                    snapshotJson = SscStore?.Get(player.Account.Name)?.SnapshotJson
+                        ?? SscStore?.Get(player.Name)?.SnapshotJson
+                        ?? string.Empty;
                 }
                 else
                 {
@@ -233,13 +295,15 @@ namespace Univers.MultiWorld
                     ApplyPendingSscRestore(player, clearPendingAndGuard: false);
 
                     int who = player.Index;
+                    string restoringName = player.Name;
                     _ = Task.Run(async () =>
                     {
                         await Task.Delay(350);
                         _mainThreadQueue.Enqueue(() =>
                         {
                             var cur = TShock.Players[who];
-                            if (cur != null && cur.Active && cur.RealPlayer)
+                            if (cur != null && cur.Active && cur.RealPlayer &&
+                                string.Equals(cur.Name, restoringName, StringComparison.OrdinalIgnoreCase))
                             {
                                 ApplyPendingSscRestore(cur, clearPendingAndGuard: false);
                             }
@@ -249,7 +313,8 @@ namespace Univers.MultiWorld
                         _mainThreadQueue.Enqueue(() =>
                         {
                             var cur = TShock.Players[who];
-                            if (cur != null && cur.Active && cur.RealPlayer)
+                            if (cur != null && cur.Active && cur.RealPlayer &&
+                                string.Equals(cur.Name, restoringName, StringComparison.OrdinalIgnoreCase))
                             {
                                 ApplyPendingSscRestore(cur, clearPendingAndGuard: true);
                             }
@@ -263,7 +328,7 @@ namespace Univers.MultiWorld
         {
             var player = e.Player;
             if (player == null || !Main.ServerSideCharacter || player.TPlayer == null || string.IsNullOrWhiteSpace(player.Name)) return;
-            SavePlayerSscEverywhere(player, synchronousIpc: true);
+            SavePlayerSscEverywhere(player, synchronousIpc: true, forceLoggedIn: true, accountNameHint: player.Account?.Name);
         }
 
         private static void TryTakeoverPublicPortAndStartProxy()
@@ -567,8 +632,8 @@ namespace Univers.MultiWorld
 
             try { Proxy?.Dispose(); } catch { }
             try { ChildPushServer?.Dispose(); } catch { }
-            try { IpcServer?.Dispose(); } catch { }
             try { ProcessManager?.Dispose(); } catch { }
+            try { IpcServer?.Dispose(); } catch { }
             try { TicketStore?.Dispose(); } catch { }
             try { SscStore?.Dispose(); } catch { }
         }
@@ -815,12 +880,17 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null) return;
 
+            TrackSlotPlayer(player);
             MultiWorldCommands.ClearPendingTeleport(player.Name);
             ClearTransferLock(player.Name);
             if (!string.IsNullOrWhiteSpace(player.Name))
             {
                 _checkedPreGreetTicket[args.Who] = 1;
-                TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
+                if (!TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true) &&
+                    !_claimedTickets.ContainsKey(player.Name))
+                {
+                    _recentTransfers.TryRemove(player.Name, out _);
+                }
             }
         }
 
@@ -836,6 +906,8 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Who];
             if (player == null || !player.Active) return;
 
+            TrackSlotPlayer(player);
+
             if (!string.IsNullOrWhiteSpace(player.Name))
             {
                 _playerJoinedUtc[player.Name] = DateTime.UtcNow;
@@ -847,6 +919,10 @@ namespace Univers.MultiWorld
             bool transferred = TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
             bool hasPendingClear = _pendingEntityClearPlayers.TryRemove(player.Name, out _);
             _claimedTickets.TryRemove(player.Name, out _);
+            if (!transferred && !hasPendingClear && !string.IsNullOrWhiteSpace(player.Name))
+            {
+                _recentTransfers.TryRemove(player.Name, out _);
+            }
 
             if (Main.ServerSideCharacter && player.RealPlayer &&
                 (_pendingSscRestores.ContainsKey(player.Name) || IsSscRestoreGuarded(player.Name)))
@@ -1012,25 +1088,39 @@ namespace Univers.MultiWorld
         private static void OnServerLeave(LeaveEventArgs args)
         {
             _checkedPreGreetTicket.TryRemove(args.Who, out _);
-            var player = TShock.Players[args.Who];
-            if (player == null || string.IsNullOrWhiteSpace(player.Name)) return;
+            _trackedSlotPlayers.TryRemove(args.Who, out var tracked);
 
-            string pName = player.Name;
+            // UniversPlugin berjalan pada Order=1 (setelah TShock Order=0 yang me-null-kan TShock.Players[args.Who]),
+            // sehingga fallback ke cached TSPlayer dari slot agar save SSC saat leave selalu dieksekusi.
+            var player = TShock.Players[args.Who] ?? tracked?.Player;
+            string pName = player != null && !string.IsNullOrWhiteSpace(player.Name)
+                ? player.Name
+                : (tracked?.PlayerName ?? string.Empty);
+
+            if (string.IsNullOrWhiteSpace(pName)) return;
+
             _pendingSscRestores.TryRemove(pName, out _);
             _sscRestoreGuardUntil.TryRemove(pName, out _);
 
-            if (player.Account == null)
-            {
-                player.Account = TShock.UserAccounts.GetUserAccountByName(player.Name);
-            }
+            bool wasLoggedIn = (player?.IsLoggedIn ?? false) || (tracked?.WasLoggedIn ?? false);
+            string? accountHint = player?.Account != null && !string.IsNullOrWhiteSpace(player.Account.Name)
+                ? player.Account.Name
+                : (tracked != null && !string.IsNullOrWhiteSpace(tracked.AccountName) ? tracked.AccountName : null);
 
-            SavePlayerSscEverywhere(player, synchronousIpc: true);
+            if (player != null)
+            {
+                SavePlayerSscEverywhere(player, synchronousIpc: true, forceLoggedIn: wasLoggedIn, accountNameHint: accountHint);
+            }
 
             MultiWorldCommands.ClearPendingTeleport(pName);
             ClearTransferLock(pName);
             _pendingEntityClearPlayers.TryRemove(pName, out _);
             _claimedTickets.TryRemove(pName, out _);
             _playerJoinedUtc.TryRemove(pName, out _);
+            if (!string.IsNullOrWhiteSpace(accountHint))
+            {
+                _inFlightMasterSyncs.TryRemove(accountHint, out _);
+            }
 
             bool wasTransfer = _recentTransfers.TryGetValue(pName, out var untilUtc) && DateTime.UtcNow <= untilUtc;
             if (!wasTransfer)
@@ -1061,12 +1151,18 @@ namespace Univers.MultiWorld
             var player = TShock.Players[args.Msg.whoAmI];
             if (player == null) return;
 
+            TrackSlotPlayer(player);
+
             int msgNum = (int)args.MsgID;
             if ((msgNum == 4 || msgNum == 6 || msgNum == 68 || args.MsgID == PacketTypes.PlayerSpawn) &&
                 !string.IsNullOrWhiteSpace(player.Name) &&
                 _checkedPreGreetTicket.TryAdd(args.Msg.whoAmI, 1))
             {
-                TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
+                if (!TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true) &&
+                    !_claimedTickets.ContainsKey(player.Name))
+                {
+                    _recentTransfers.TryRemove(player.Name, out _);
+                }
             }
 
             if (Main.ServerSideCharacter && player.TPlayer != null &&
@@ -1095,7 +1191,7 @@ namespace Univers.MultiWorld
         private static void OnGameUpdate(EventArgs args)
         {
             int processed = 0;
-            while (processed < 12 && _mainThreadQueue.TryDequeue(out var action))
+            while (processed < 32 && _mainThreadQueue.TryDequeue(out var action))
             {
                 processed++;
                 try { action(); }
@@ -1114,6 +1210,7 @@ namespace Univers.MultiWorld
                     {
                         if (p != null && p.Active && p.IsLoggedIn && p.TPlayer != null)
                         {
+                            TrackSlotPlayer(p);
                             SavePlayerSscEverywhere(p, synchronousIpc: false);
                         }
                     }
@@ -1220,6 +1317,7 @@ namespace Univers.MultiWorld
 
                 player.Account = account;
                 player.IsLoggedIn = true;
+                TrackSlotPlayer(player);
 
                 string effectiveSscJson = string.Empty;
                 bool sscDbApplied = false;
@@ -1356,15 +1454,28 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static string SerializePlayerSscSnapshot(TSPlayer? player)
+        private static string SerializePlayerSscSnapshot(TSPlayer? player, bool forceLoggedIn = false, string? accountNameHint = null)
         {
             if (player == null || player.TPlayer == null || !Main.ServerSideCharacter || string.IsNullOrWhiteSpace(player.Name))
             {
                 return string.Empty;
             }
 
-            player.Account ??= TShock.UserAccounts.GetUserAccountByName(player.Name);
-            if (!player.IsLoggedIn && player.Account == null)
+            bool isLoggedIn = player.IsLoggedIn || forceLoggedIn;
+            if (!isLoggedIn)
+            {
+                return string.Empty;
+            }
+
+            if (player.Account == null)
+            {
+                string lookupAcc = !string.IsNullOrWhiteSpace(accountNameHint) ? accountNameHint : player.Name;
+                player.Account = TShock.UserAccounts.GetUserAccountByName(lookupAcc)
+                    ?? (!lookupAcc.Equals(player.Name, StringComparison.OrdinalIgnoreCase)
+                        ? TShock.UserAccounts.GetUserAccountByName(player.Name)
+                        : null);
+            }
+            if (player.Account == null)
             {
                 return string.Empty;
             }
@@ -1409,8 +1520,13 @@ namespace Univers.MultiWorld
                 return string.Empty;
             }
 
+            if (!player.IsLoggedIn)
+            {
+                return string.Empty;
+            }
+
             player.Account ??= TShock.UserAccounts.GetUserAccountByName(player.Name);
-            if (!player.IsLoggedIn && player.Account == null)
+            if (player.Account == null)
             {
                 return string.Empty;
             }
@@ -1442,7 +1558,7 @@ namespace Univers.MultiWorld
             return json;
         }
 
-        private static void SavePlayerSscEverywhere(TSPlayer? player, bool synchronousIpc)
+        private static void SavePlayerSscEverywhere(TSPlayer? player, bool synchronousIpc, bool forceLoggedIn = false, string? accountNameHint = null)
         {
             if (player == null || player.TPlayer == null || !Main.ServerSideCharacter || string.IsNullOrWhiteSpace(player.Name))
             {
@@ -1453,45 +1569,68 @@ namespace Univers.MultiWorld
                 return;
             }
 
-            player.Account ??= TShock.UserAccounts.GetUserAccountByName(player.Name);
-            if (!player.IsLoggedIn && player.Account == null)
+            bool isLoggedIn = player.IsLoggedIn || forceLoggedIn;
+            if (!isLoggedIn)
             {
                 return;
             }
 
-            string json = SerializePlayerSscSnapshot(player);
+            if (player.Account == null)
+            {
+                string lookupAcc = !string.IsNullOrWhiteSpace(accountNameHint) ? accountNameHint : player.Name;
+                player.Account = TShock.UserAccounts.GetUserAccountByName(lookupAcc)
+                    ?? (!lookupAcc.Equals(player.Name, StringComparison.OrdinalIgnoreCase)
+                        ? TShock.UserAccounts.GetUserAccountByName(player.Name)
+                        : null);
+            }
+            if (player.Account == null)
+            {
+                return;
+            }
+
+            string json = SerializePlayerSscSnapshot(player, forceLoggedIn: isLoggedIn, accountNameHint: accountNameHint);
             if (string.IsNullOrWhiteSpace(json)) return;
 
-            string accName = player.Account?.Name ?? player.Name;
-            if (!synchronousIpc &&
-                _lastSavedSscJson.TryGetValue(accName, out var prevJson) &&
-                string.Equals(prevJson, json, StringComparison.Ordinal))
+            string accName = player.Account?.Name ?? (!string.IsNullOrWhiteSpace(accountNameHint) ? accountNameHint : player.Name);
+            bool localChanged = !_lastSavedSscJson.TryGetValue(accName, out var prevJson) ||
+                                !string.Equals(prevJson, json, StringComparison.Ordinal);
+            bool ipcNeeded = IsChildProcess &&
+                             (!_lastMasterSyncedSscJson.TryGetValue(accName, out var prevSynced) ||
+                              !string.Equals(prevSynced, json, StringComparison.Ordinal));
+
+            if (!synchronousIpc && !localChanged && !ipcNeeded)
             {
                 return;
             }
 
-            _lastSavedSscJson[accName] = json;
-
-            try
+            if (synchronousIpc || localChanged)
             {
-                if (player.Account != null && player.Account.ID > 0)
+                _lastSavedSscJson[accName] = json;
+
+                try
                 {
-                    player.PlayerData ??= GetPlayerDataWithRetry(player, player.Account.ID);
-                    if (player.PlayerData != null)
+                    if (player.Account != null && player.Account.ID > 0)
                     {
-                        player.PlayerData.CopyCharacter(player);
-                        ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
+                        player.PlayerData ??= GetPlayerDataWithRetry(player, player.Account.ID);
+                        if (player.PlayerData != null)
+                        {
+                            player.PlayerData.CopyCharacter(player);
+                            ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal save local DB '{player.Name}': {ex.Message}");
+                catch (Exception ex)
+                {
+                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal save local DB '{player.Name}': {ex.Message}");
+                }
             }
 
             if (!IsChildProcess)
             {
-                SscStore?.Save(accName, player.Name, CurrentWorldId, json);
+                if (synchronousIpc || localChanged)
+                {
+                    SscStore?.Save(accName, player.Name, CurrentWorldId, json);
+                }
             }
             else
             {
@@ -1501,24 +1640,64 @@ namespace Univers.MultiWorld
                     AccountName = accName,
                     PlayerName = player.Name,
                     WorldId = CurrentWorldId,
+                    AdminSubAction = synchronousIpc ? "leave_sync" : string.Empty,
                     SscSnapshotJson = json
                 };
 
                 if (synchronousIpc)
                 {
-                    try
+                    bool ok = false;
+                    string lastErr = string.Empty;
+                    for (int attempt = 1; attempt <= 3; attempt++)
                     {
-                        var res = MultiWorldIpcClient.SendAsync(MasterIpcPort, req, timeoutMs: 3500).GetAwaiter().GetResult();
-                        TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Saved SSC for '{player.Name}' ({CurrentWorldId}) on leave: IPC success={res.Success}, len={json.Length}");
+                        try
+                        {
+                            var res = MultiWorldIpcClient.SendAsync(MasterIpcPort, req, timeoutMs: 3500).GetAwaiter().GetResult();
+                            if (res.Success)
+                            {
+                                ok = true;
+                                _lastMasterSyncedSscJson[accName] = json;
+                                break;
+                            }
+                            lastErr = res.Message;
+                        }
+                        catch (Exception ex)
+                        {
+                            lastErr = ex.Message;
+                        }
+
+                        if (attempt < 3)
+                        {
+                            System.Threading.Thread.Sleep(150);
+                        }
                     }
-                    catch (Exception ex)
+
+                    if (ok)
                     {
-                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal kirim IPC save_ssc on leave '{player.Name}': {ex.Message}");
+                        TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Synced SSC for '{player.Name}' ({CurrentWorldId}) -> Master/Lobby on leave (len={json.Length}).");
+                    }
+                    else
+                    {
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal sync IPC save_ssc on leave '{player.Name}' ({CurrentWorldId}): {lastErr}");
                     }
                 }
-                else
+                else if (ipcNeeded)
                 {
-                    _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, req, timeoutMs: 2500);
+                    if (_inFlightMasterSyncs.TryGetValue(accName, out var sendingJson) &&
+                        string.Equals(sendingJson, json, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    _inFlightMasterSyncs[accName] = json;
+                    _ = MultiWorldIpcClient.SendAsync(MasterIpcPort, req, timeoutMs: 2500).ContinueWith(t =>
+                    {
+                        _inFlightMasterSyncs.TryRemove(accName, out _);
+                        if (t.IsCompletedSuccessfully && t.Result.Success)
+                        {
+                            _lastMasterSyncedSscJson[accName] = json;
+                        }
+                    }, TaskScheduler.Default);
                 }
             }
         }
@@ -1528,12 +1707,30 @@ namespace Univers.MultiWorld
             if (!Main.ServerSideCharacter) return;
             try
             {
+                var handledNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
                 foreach (var p in TShock.Players)
                 {
-                    if (p != null && p.TPlayer != null && (p.Active || p.IsLoggedIn || p.Account != null))
+                    if (p != null && p.TPlayer != null && !string.IsNullOrWhiteSpace(p.Name) && (p.IsLoggedIn || p.Account != null))
                     {
-                        SavePlayerSscEverywhere(p, synchronousIpc: true);
+                        handledNames.Add(p.Name);
+                        SavePlayerSscEverywhere(p, synchronousIpc: true, forceLoggedIn: p.IsLoggedIn, accountNameHint: p.Account?.Name);
                     }
+                }
+
+                foreach (var kv in _trackedSlotPlayers.ToArray())
+                {
+                    var tracked = kv.Value;
+                    if (tracked?.Player == null || tracked.Player.TPlayer == null) continue;
+                    string pName = !string.IsNullOrWhiteSpace(tracked.Player.Name) ? tracked.Player.Name : tracked.PlayerName;
+                    if (string.IsNullOrWhiteSpace(pName) || !handledNames.Add(pName)) continue;
+                    if (!tracked.WasLoggedIn && !tracked.Player.IsLoggedIn) continue;
+
+                    SavePlayerSscEverywhere(
+                        tracked.Player,
+                        synchronousIpc: true,
+                        forceLoggedIn: tracked.WasLoggedIn,
+                        accountNameHint: !string.IsNullOrWhiteSpace(tracked.AccountName) ? tracked.AccountName : null);
                 }
             }
             catch { }
@@ -1592,6 +1789,10 @@ namespace Univers.MultiWorld
                         dbSaved = ForceWriteLocalCharacterDb(player, bypassPermissionGate: true);
                     }
                     _lastSavedSscJson[player.Account.Name] = sscJson;
+                    if (IsChildProcess)
+                    {
+                        _lastMasterSyncedSscJson[player.Account.Name] = sscJson;
+                    }
                 }
                 else
                 {
@@ -1606,15 +1807,18 @@ namespace Univers.MultiWorld
             }
         }
 
-        private static void SyncSscJsonToMasterCharacterDb(string accountName, string playerName, string sscJson)
+        private static Task<bool> SyncSscJsonToMasterCharacterDbAsync(string accountName, string playerName, string sscJson)
         {
             if (IsChildProcess || !Main.ServerSideCharacter || string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(sscJson))
             {
-                return;
+                return Task.FromResult(false);
             }
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             _mainThreadQueue.Enqueue(() =>
             {
+                bool ok = false;
                 try
                 {
                     var online = TShock.Players.FirstOrDefault(p =>
@@ -1624,7 +1828,7 @@ namespace Univers.MultiWorld
                     {
                         if (!_pendingSscRestores.ContainsKey(online.Name) && !IsSscRestoreGuarded(online.Name))
                         {
-                            ApplySscJsonToMemoryAndLocalDb(online, sscJson, out _);
+                            ok = ApplySscJsonToMemoryAndLocalDb(online, sscJson, out _);
                         }
                         return;
                     }
@@ -1640,6 +1844,7 @@ namespace Univers.MultiWorld
                     if (snap == null) return;
 
                     _scratchSyncPlayer ??= new Terraria.Player();
+                    _scratchSyncPlayer.name = string.IsNullOrWhiteSpace(playerName) ? acc.Name : playerName;
                     ApplySnapshotToTerrariaPlayer(_scratchSyncPlayer, snap);
 
                     var prevSlot255 = Main.player[255];
@@ -1656,7 +1861,11 @@ namespace Univers.MultiWorld
                         if (writerTs.PlayerData != null)
                         {
                             writerTs.PlayerData.CopyCharacter(writerTs);
-                            ForceWriteLocalCharacterDb(writerTs, bypassPermissionGate: true);
+                            ok = ForceWriteLocalCharacterDb(writerTs, bypassPermissionGate: true);
+                        }
+                        if (ok)
+                        {
+                            _lastSavedSscJson[acc.Name] = sscJson;
                         }
                     }
                     finally
@@ -1668,7 +1877,18 @@ namespace Univers.MultiWorld
                 {
                     TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Sync SSC ke SQLite utama gagal untuk '{accountName}': {ex.Message}");
                 }
+                finally
+                {
+                    tcs.TrySetResult(ok);
+                }
             });
+
+            return tcs.Task;
+        }
+
+        private static void SyncSscJsonToMasterCharacterDb(string accountName, string playerName, string sscJson)
+        {
+            _ = SyncSscJsonToMasterCharacterDbAsync(accountName, playerName, sscJson);
         }
 
         private static void ApplyPendingSscRestore(TSPlayer player, bool clearPendingAndGuard = true)
@@ -1820,6 +2040,13 @@ namespace Univers.MultiWorld
 
             int idx = player.Index;
             bool hasNetClient = idx >= 0 && idx < Netplay.Clients.Length && Netplay.Clients[idx] != null;
+            bool createdTempClient = false;
+            if (!hasNetClient && idx >= 0 && idx < Netplay.Clients.Length)
+            {
+                Netplay.Clients[idx] = new Terraria.RemoteClient();
+                hasNetClient = true;
+                createdTempClient = true;
+            }
             int prevState = hasNetClient ? Netplay.Clients[idx].State : 0;
             Group? prevGroup = player.Group;
             bool prevLoggedIn = player.IsLoggedIn;
@@ -1866,7 +2093,11 @@ namespace Univers.MultiWorld
                 {
                     player.Group = prevGroup;
                 }
-                if (hasNetClient && prevState < 10)
+                if (createdTempClient)
+                {
+                    Netplay.Clients[idx] = null!;
+                }
+                else if (hasNetClient && prevState < 10)
                 {
                     Netplay.Clients[idx].State = prevState;
                 }
@@ -2335,8 +2566,24 @@ namespace Univers.MultiWorld
                  case "save_ssc":
                      if (!string.IsNullOrWhiteSpace(req.AccountName) && !string.IsNullOrWhiteSpace(req.SscSnapshotJson))
                      {
+                         var activeSession = !string.IsNullOrWhiteSpace(req.PlayerName)
+                             ? Proxy?.FindSessionByPlayerName(req.PlayerName)
+                             : null;
+                         if (activeSession != null &&
+                             !string.IsNullOrWhiteSpace(req.WorldId) &&
+                             !string.IsNullOrWhiteSpace(activeSession.CurrentWorldId) &&
+                             !activeSession.CurrentWorldId.Equals(req.WorldId, StringComparison.OrdinalIgnoreCase))
+                         {
+                             // Player sudah pindah ke world lain (mis. baru switch ke lobby); jangan timpa dengan leave_sync telat dari world lama
+                             return new IpcResponse { Success = true };
+                         }
+
                          SscStore?.Save(req.AccountName, req.PlayerName, req.WorldId, req.SscSnapshotJson);
-                         SyncSscJsonToMasterCharacterDb(req.AccountName, req.PlayerName, req.SscSnapshotJson);
+                         var syncTask = SyncSscJsonToMasterCharacterDbAsync(req.AccountName, req.PlayerName, req.SscSnapshotJson);
+                         if (string.Equals(req.AdminSubAction, "leave_sync", StringComparison.OrdinalIgnoreCase) && _initialized)
+                         {
+                             await Task.WhenAny(syncTask, Task.Delay(1500));
+                         }
                      }
                      return new IpcResponse { Success = true };
 
