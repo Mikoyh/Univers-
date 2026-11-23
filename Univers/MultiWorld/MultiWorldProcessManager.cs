@@ -836,7 +836,28 @@ namespace Univers.MultiWorld
             if (!Directory.Exists(sourcePlugins)) return;
 
             string targetPlugins = Path.Combine(instDir, "ServerPlugins");
-            if (Directory.Exists(targetPlugins)) return;
+            if (Directory.Exists(targetPlugins))
+            {
+                try
+                {
+                    var dirInfo = new DirectoryInfo(targetPlugins);
+                    bool isLink = (dirInfo.Attributes & FileAttributes.ReparsePoint) != 0 || !string.IsNullOrEmpty(dirInfo.LinkTarget);
+                    if (isLink) return;
+
+                    foreach (string file in Directory.GetFiles(sourcePlugins, "*.dll"))
+                    {
+                        string dst = Path.Combine(targetPlugins, Path.GetFileName(file));
+                        var srcInfo = new FileInfo(file);
+                        var dstInfo = new FileInfo(dst);
+                        if (!dstInfo.Exists || dstInfo.Length != srcInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
+                        {
+                            File.Copy(file, dst, true);
+                        }
+                    }
+                }
+                catch { }
+                return;
+            }
 
             try
             {

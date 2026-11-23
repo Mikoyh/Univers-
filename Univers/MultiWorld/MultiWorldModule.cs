@@ -62,6 +62,8 @@ namespace Univers.MultiWorld
         private static readonly ConcurrentDictionary<string, DateTime> _sscRestoreGuardUntil = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _playerJoinedUtc = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, string> _lastSavedSscJson = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<int, byte> _checkedPreGreetTicket = new();
+        private static Terraria.Player? _scratchSyncPlayer;
 
         public static void SetTransferLock(string playerName, int seconds)
         {
@@ -788,12 +790,17 @@ namespace Univers.MultiWorld
 
         private static void OnServerJoin(JoinEventArgs args)
         {
+            _checkedPreGreetTicket.TryRemove(args.Who, out _);
             var player = TShock.Players[args.Who];
             if (player == null) return;
 
             MultiWorldCommands.ClearPendingTeleport(player.Name);
             ClearTransferLock(player.Name);
-            TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
+            if (!string.IsNullOrWhiteSpace(player.Name))
+            {
+                _checkedPreGreetTicket[args.Who] = 1;
+                TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
+            }
         }
 
         public static bool IsPlayerTransferring(TSPlayer? player)
@@ -984,6 +991,7 @@ namespace Univers.MultiWorld
 
         private static void OnServerLeave(LeaveEventArgs args)
         {
+            _checkedPreGreetTicket.TryRemove(args.Who, out _);
             var player = TShock.Players[args.Who];
             if (player == null || string.IsNullOrWhiteSpace(player.Name)) return;
 
@@ -1026,6 +1034,14 @@ namespace Univers.MultiWorld
             if (args.Handled) return;
             var player = TShock.Players[args.Msg.whoAmI];
             if (player == null) return;
+
+            int msgNum = (int)args.MsgID;
+            if ((msgNum == 4 || msgNum == 6 || msgNum == 68 || args.MsgID == PacketTypes.PlayerSpawn) &&
+                !string.IsNullOrWhiteSpace(player.Name) &&
+                _checkedPreGreetTicket.TryAdd(args.Msg.whoAmI, 1))
+            {
+                TryApplyTransferTicket(player, markForCleanup: true, consumeFromMaster: true);
+            }
 
             if (Main.ServerSideCharacter && player.RealPlayer &&
                 !player.HasPermission("tshock.ignore.ssc") &&
@@ -1461,6 +1477,33 @@ namespace Univers.MultiWorld
             catch { }
         }
 
+        private static void ApplySnapshotToTerrariaPlayer(Terraria.Player tp, TransferSscSnapshot snap)
+        {
+            tp.statLifeMax = Math.Max(100, snap.MaxHealth);
+            tp.statLife = Math.Clamp(snap.Health, 1, tp.statLifeMax);
+            tp.statManaMax = Math.Max(20, snap.MaxMana);
+            tp.statMana = Math.Clamp(snap.Mana, 0, tp.statManaMax);
+            tp.extraAccessory = snap.ExtraAccessory;
+            tp.unlockedBiomeTorches = snap.UnlockedBiomeTorches;
+            tp.anglerQuestsFinished = snap.AnglerQuestsFinished;
+
+            if (snap.TrashItem != null)
+            {
+                tp.trashItem ??= new Item();
+                RestoreSingleItem(tp.trashItem, snap.TrashItem);
+            }
+
+            RestoreItemArray(tp.inventory, snap.Inventory);
+            RestoreItemArray(tp.armor, snap.Armor);
+            RestoreItemArray(tp.dye, snap.Dye);
+            RestoreItemArray(tp.miscEquips, snap.MiscEquips);
+            RestoreItemArray(tp.miscDyes, snap.MiscDyes);
+            RestoreItemArray(tp.bank?.item, snap.Bank);
+            RestoreItemArray(tp.bank2?.item, snap.Bank2);
+            RestoreItemArray(tp.bank3?.item, snap.Bank3);
+            RestoreItemArray(tp.bank4?.item, snap.Bank4);
+        }
+
         private static bool ApplySscJsonToMemoryAndLocalDb(TSPlayer player, string sscJson)
         {
             if (player == null || player.TPlayer == null || string.IsNullOrWhiteSpace(sscJson)) return false;
@@ -1470,30 +1513,7 @@ namespace Univers.MultiWorld
                 var snap = JsonConvert.DeserializeObject<TransferSscSnapshot>(sscJson);
                 if (snap == null) return false;
 
-                var tp = player.TPlayer;
-                tp.statLifeMax = Math.Max(100, snap.MaxHealth);
-                tp.statLife = Math.Clamp(snap.Health, 1, tp.statLifeMax);
-                tp.statManaMax = Math.Max(20, snap.MaxMana);
-                tp.statMana = Math.Clamp(snap.Mana, 0, tp.statManaMax);
-                tp.extraAccessory = snap.ExtraAccessory;
-                tp.unlockedBiomeTorches = snap.UnlockedBiomeTorches;
-                tp.anglerQuestsFinished = snap.AnglerQuestsFinished;
-
-                if (snap.TrashItem != null)
-                {
-                    tp.trashItem ??= new Item();
-                    RestoreSingleItem(tp.trashItem, snap.TrashItem);
-                }
-
-                RestoreItemArray(tp.inventory, snap.Inventory);
-                RestoreItemArray(tp.armor, snap.Armor);
-                RestoreItemArray(tp.dye, snap.Dye);
-                RestoreItemArray(tp.miscEquips, snap.MiscEquips);
-                RestoreItemArray(tp.miscDyes, snap.MiscDyes);
-                RestoreItemArray(tp.bank?.item, snap.Bank);
-                RestoreItemArray(tp.bank2?.item, snap.Bank2);
-                RestoreItemArray(tp.bank3?.item, snap.Bank3);
-                RestoreItemArray(tp.bank4?.item, snap.Bank4);
+                ApplySnapshotToTerrariaPlayer(player.TPlayer, snap);
 
                 if (player.Account != null)
                 {
@@ -1512,6 +1532,75 @@ namespace Univers.MultiWorld
                 TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal parse SSC '{player.Name}': {ex.Message}");
                 return false;
             }
+        }
+
+        private static void SyncSscJsonToMasterCharacterDb(string accountName, string playerName, string sscJson)
+        {
+            if (IsChildProcess || !Main.ServerSideCharacter || string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(sscJson))
+            {
+                return;
+            }
+
+            _mainThreadQueue.Enqueue(() =>
+            {
+                try
+                {
+                    var online = TShock.Players.FirstOrDefault(p =>
+                        p != null && p.Active && p.RealPlayer && p.IsLoggedIn &&
+                        string.Equals(p.Account?.Name ?? p.Name, accountName, StringComparison.OrdinalIgnoreCase));
+                    if (online != null)
+                    {
+                        if (!_pendingSscRestores.ContainsKey(online.Name) && !IsSscRestoreGuarded(online.Name))
+                        {
+                            ApplySscJsonToMemoryAndLocalDb(online, sscJson);
+                        }
+                        return;
+                    }
+
+                    var acc = TShock.UserAccounts.GetUserAccountByName(accountName);
+                    if (acc == null && !string.IsNullOrWhiteSpace(playerName))
+                    {
+                        acc = TShock.UserAccounts.GetUserAccountByName(playerName);
+                    }
+                    if (acc == null || acc.ID <= 0) return;
+
+                    var snap = JsonConvert.DeserializeObject<TransferSscSnapshot>(sscJson);
+                    if (snap == null) return;
+
+                    _scratchSyncPlayer ??= new Terraria.Player();
+                    _scratchSyncPlayer.bank ??= new Chest(true);
+                    _scratchSyncPlayer.bank2 ??= new Chest(true);
+                    _scratchSyncPlayer.bank3 ??= new Chest(true);
+                    _scratchSyncPlayer.bank4 ??= new Chest(true);
+                    ApplySnapshotToTerrariaPlayer(_scratchSyncPlayer, snap);
+
+                    var prevSlot255 = Main.player[255];
+                    try
+                    {
+                        Main.player[255] = _scratchSyncPlayer;
+                        var writerTs = new TSPlayer(255)
+                        {
+                            Account = acc,
+                            IsLoggedIn = true,
+                            Group = new Group("ssc_sync_writer")
+                        };
+                        writerTs.PlayerData = GetPlayerDataWithRetry(writerTs, acc.ID);
+                        if (writerTs.PlayerData != null)
+                        {
+                            writerTs.PlayerData.CopyCharacter(writerTs);
+                            InsertPlayerDataWithRetry(writerTs);
+                        }
+                    }
+                    finally
+                    {
+                        Main.player[255] = prevSlot255;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Sync SSC ke SQLite utama gagal untuk '{accountName}': {ex.Message}");
+                }
+            });
         }
 
         private static void ApplyPendingSscRestore(TSPlayer player, bool clearPendingAndGuard = true)
@@ -1545,15 +1634,13 @@ namespace Univers.MultiWorld
                         player.PlayerData.RestoreCharacter(player);
                         InsertPlayerDataWithRetry(player);
                     }
-                    else
+
+                    NetMessage.SendData((int)PacketTypes.PlayerInfo, -1, -1, null, player.Index);
+                    NetMessage.SendData((int)PacketTypes.PlayerHp, -1, -1, null, player.Index);
+                    NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, player.Index);
+                    for (int s = 0; s < 260; s++)
                     {
-                        NetMessage.SendData((int)PacketTypes.PlayerInfo, -1, -1, null, player.Index);
-                        NetMessage.SendData((int)PacketTypes.PlayerHp, -1, -1, null, player.Index);
-                        NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, player.Index);
-                        for (int i = 0; i < 59; i++)
-                        {
-                            NetMessage.SendData((int)PacketTypes.PlayerSlot, -1, -1, null, player.Index, i);
-                        }
+                        NetMessage.SendData((int)PacketTypes.PlayerSlot, player.Index, -1, null, player.Index, s);
                     }
 
                     if (player.TPlayer != null && player.TPlayer.selectedItem >= 0 && player.TPlayer.selectedItem < 59)
@@ -2054,6 +2141,7 @@ namespace Univers.MultiWorld
                      if (!string.IsNullOrWhiteSpace(req.AccountName) && !string.IsNullOrWhiteSpace(req.SscSnapshotJson))
                      {
                          SscStore?.Save(req.AccountName, req.PlayerName, req.WorldId, req.SscSnapshotJson);
+                         SyncSscJsonToMasterCharacterDb(req.AccountName, req.PlayerName, req.SscSnapshotJson);
                      }
                      return new IpcResponse { Success = true };
 
@@ -2240,6 +2328,12 @@ namespace Univers.MultiWorld
                             string finalPerms = !string.IsNullOrWhiteSpace(masterPerms) ? masterPerms : req.GroupPermissions;
 
                             _recentTransfers[req.PlayerName] = DateTime.UtcNow.AddSeconds(12);
+                            if (!string.IsNullOrWhiteSpace(req.SscSnapshotJson))
+                            {
+                                string accKey = !string.IsNullOrWhiteSpace(req.AccountName) ? req.AccountName : req.PlayerName;
+                                SscStore?.Save(accKey, req.PlayerName, session.CurrentWorldId, req.SscSnapshotJson);
+                                SyncSscJsonToMasterCharacterDb(accKey, req.PlayerName, req.SscSnapshotJson);
+                            }
                             TicketStore.IssueTicket(req.PlayerName, req.AccountName, req.GroupName, req.ClientUuid, session.CurrentWorldId, target.Id, finalWildcard, finalPerms, req.SscSnapshotJson);
                             if (!target.IsHub)
                             {
@@ -2444,6 +2538,8 @@ namespace Univers.MultiWorld
                 if (!string.IsNullOrEmpty(remainder))
                 {
                     string bcMsg = $"[c/facc15:[BROADCAST]] {remainder}";
+                    BroadcastLocalFormatted(bcMsg, new Color(250, 204, 21));
+                    TShock.Log.ConsoleInfo(StripTerrariaColorTags(bcMsg));
                     if (!IsChildProcess)
                     {
                         _ = PushMessageToOtherChildrenAsync(null, "push_broadcast", bcMsg, 250, 204, 21);
@@ -2457,6 +2553,7 @@ namespace Univers.MultiWorld
                             FormattedMessage = bcMsg
                         });
                     }
+                    args.Handled = true;
                 }
             }
             else if (cmdName == "say")
@@ -2464,6 +2561,8 @@ namespace Univers.MultiWorld
                 if (!string.IsNullOrEmpty(remainder))
                 {
                     string sayMsg = $"[c/38bdf8:[SERVER]] {remainder}";
+                    BroadcastLocalFormatted(sayMsg, new Color(56, 189, 248));
+                    TShock.Log.ConsoleInfo(StripTerrariaColorTags(sayMsg));
                     if (!IsChildProcess)
                     {
                         _ = PushMessageToOtherChildrenAsync(null, "push_chat", sayMsg, 56, 189, 248);
@@ -2477,6 +2576,7 @@ namespace Univers.MultiWorld
                             FormattedMessage = sayMsg
                         });
                     }
+                    args.Handled = true;
                 }
             }
             else if (cmdName == "give" || cmdName == "g")
@@ -2527,8 +2627,10 @@ namespace Univers.MultiWorld
                 {
                     string msgText = string.Join(" ", args.Parameters);
                     string bcMsg = $"[c/facc15:[BROADCAST]] {msgText}";
+                    BroadcastLocalFormatted(bcMsg, new Color(250, 204, 21));
                     if (!IsChildProcess)
                     {
+                        TShock.Log.ConsoleInfo(StripTerrariaColorTags(bcMsg));
                         _ = PushMessageToOtherChildrenAsync(null, "push_broadcast", bcMsg, 250, 204, 21);
                     }
                     else
@@ -2540,6 +2642,7 @@ namespace Univers.MultiWorld
                             FormattedMessage = bcMsg
                         });
                     }
+                    args.Handled = true;
                 }
             }
             else if (cmd == "say")
@@ -2548,8 +2651,10 @@ namespace Univers.MultiWorld
                 {
                     string msgText = string.Join(" ", args.Parameters);
                     string sayMsg = $"[c/38bdf8:[SERVER {args.Player.Name}]] {msgText}";
+                    BroadcastLocalFormatted(sayMsg, new Color(56, 189, 248));
                     if (!IsChildProcess)
                     {
+                        TShock.Log.ConsoleInfo(StripTerrariaColorTags(sayMsg));
                         _ = PushMessageToOtherChildrenAsync(null, "push_chat", sayMsg, 56, 189, 248);
                     }
                     else
@@ -2561,6 +2666,7 @@ namespace Univers.MultiWorld
                             FormattedMessage = sayMsg
                         });
                     }
+                    args.Handled = true;
                 }
             }
             else if (cmd == "give" || cmd == "g")
