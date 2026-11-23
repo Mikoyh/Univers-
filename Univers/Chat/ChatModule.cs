@@ -287,25 +287,20 @@ namespace Univers.Chat
             }
         }
 
-        private static readonly ConcurrentDictionary<Action, byte> _mainThreadQueue = new();
+        private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
 
         public static void QueueMainThread(Action action)
         {
-            if (action != null) _mainThreadQueue[action] = 0;
+            if (action != null) _mainThreadQueue.Enqueue(action);
         }
 
         public static void PumpMainThread()
         {
-            while (!_mainThreadQueue.IsEmpty)
+            int count = 0;
+            while (count < 20 && _mainThreadQueue.TryDequeue(out var action))
             {
-                var keys = _mainThreadQueue.Keys.Take(20).ToList();
-                foreach (var key in keys)
-                {
-                    if (_mainThreadQueue.TryRemove(key, out _))
-                    {
-                        try { key(); } catch { }
-                    }
-                }
+                count++;
+                try { action?.Invoke(); } catch { }
             }
         }
     }

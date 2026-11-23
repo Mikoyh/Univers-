@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using System.Timers;
 using Microsoft.Xna.Framework;
@@ -588,7 +589,7 @@ namespace Univers.MultiWorld
             }
             else if (req.Action == "remote_give")
             {
-                var target = TSPlayer.FindByName(req.PlayerName).FirstOrDefault();
+                var target = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(req.PlayerName, StringComparison.OrdinalIgnoreCase));
                 if (target == null || !target.Active)
                 {
                     return Task.FromResult(new IpcResponse { Success = false, Message = $"Player '{req.PlayerName}' tidak ditemukan di world '{CurrentWorldId}'." });
@@ -1677,7 +1678,7 @@ namespace Univers.MultiWorld
                          var targetDef = Config.GetWorld(req.WorldId);
                          if (targetDef != null && targetDef.IsHub)
                          {
-                             var target = TSPlayer.FindByName(req.PlayerName).FirstOrDefault();
+                             var target = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(req.PlayerName, StringComparison.OrdinalIgnoreCase));
                              if (target == null || !target.Active)
                              {
                                  return new IpcResponse { Success = false, Message = $"Player '{req.PlayerName}' tidak ditemukan di Hub." };
@@ -1975,7 +1976,8 @@ namespace Univers.MultiWorld
         {
             if (int.TryParse(query, out int id) && id > 0 && id < Terraria.ID.ItemID.Count)
             {
-                return TShock.Utils.GetItemById(id);
+                var item = TShock.Utils.GetItemById(id);
+                return item != null ? new List<Item> { item } : new List<Item>();
             }
             return TShock.Utils.GetItemByName(query);
         }
@@ -2071,7 +2073,7 @@ namespace Univers.MultiWorld
 
             if (cmd == "broadcast" || cmd == "bc")
             {
-                if (args.Player.HasPermission(Permissions.broadcast) && args.Parameters.Count > 0)
+                if (args.Player.HasPermission("tshock.admin.broadcast") && args.Parameters.Count > 0)
                 {
                     string msgText = string.Join(" ", args.Parameters);
                     string bcMsg = $"[c/facc15:[BROADCAST]] {msgText}";
@@ -2092,7 +2094,7 @@ namespace Univers.MultiWorld
             }
             else if (cmd == "say")
             {
-                if (args.Player.HasPermission(Permissions.say) && args.Parameters.Count > 0)
+                if (args.Player.HasPermission("tshock.cfg.say") && args.Parameters.Count > 0)
                 {
                     string msgText = string.Join(" ", args.Parameters);
                     string sayMsg = $"[c/38bdf8:[SERVER {args.Player.Name}]] {msgText}";
@@ -2127,8 +2129,8 @@ namespace Univers.MultiWorld
         {
             if (parts.Count < 2) return false;
 
-            var localA = TSPlayer.FindByName(parts[0]).FirstOrDefault();
-            var localB = TSPlayer.FindByName(parts[1]).FirstOrDefault();
+            var localA = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(parts[0], StringComparison.OrdinalIgnoreCase));
+            var localB = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(parts[1], StringComparison.OrdinalIgnoreCase));
             if ((localA != null && localA.Active) || (localB != null && localB.Active))
             {
                 return false;
@@ -2208,7 +2210,7 @@ namespace Univers.MultiWorld
             {
                 if (targetWorld.IsHub)
                 {
-                    var hubPlayer = TSPlayer.FindByName(candidatePlayer).FirstOrDefault();
+                    var hubPlayer = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(candidatePlayer, StringComparison.OrdinalIgnoreCase));
                     if (hubPlayer != null && hubPlayer.Active)
                     {
                         _mainThreadQueue.Enqueue(() =>

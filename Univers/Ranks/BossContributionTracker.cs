@@ -26,6 +26,7 @@ using TerrariaApi.Server;
 using TShockAPI;
 using Skynomi.Economy;
 using Univers.Exp;
+using Univers;
 
 namespace Skynomi.Ranks
 {
