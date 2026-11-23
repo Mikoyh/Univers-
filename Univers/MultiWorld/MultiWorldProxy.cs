@@ -368,9 +368,11 @@ namespace Univers.MultiWorld
                     byte[]? hs = await ReadPacketAsync(newStream, connectCts.Token);
                     if (hs == null)
                     {
-                        string msg = "Backend tujuan menutup koneksi saat handshake.";
-                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg}");
-                        return (false, msg);
+                        string cause = connectCts.IsCancellationRequested
+                            ? (session.Cts.IsCancellationRequested ? "Sesi client terputus saat handshake." : "Timeout 10d menunggu respons ContinueConnecting dari backend.")
+                            : "Backend tujuan menutup koneksi saat handshake.";
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {cause}");
+                        return (false, cause);
                     }
 
                     byte id = hs[2];

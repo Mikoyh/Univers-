@@ -1631,17 +1631,33 @@ namespace Univers.MultiWorld
                         InsertPlayerDataWithRetry(player);
                     }
 
-                    NetMessage.SendData((int)PacketTypes.PlayerInfo, -1, -1, null, player.Index);
-                    NetMessage.SendData((int)PacketTypes.PlayerHp, -1, -1, null, player.Index);
-                    NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, player.Index);
+                    try
+                    {
+                        NetMessage.SendData((int)PacketTypes.PlayerInfo, -1, -1, null, player.Index);
+                        NetMessage.SendData((int)PacketTypes.PlayerHp, -1, -1, null, player.Index);
+                        NetMessage.SendData((int)PacketTypes.PlayerMana, -1, -1, null, player.Index);
+                    }
+                    catch { }
+
                     for (int s = 0; s < 260; s++)
                     {
-                        NetMessage.SendData((int)PacketTypes.PlayerSlot, player.Index, -1, null, player.Index, s);
+                        try
+                        {
+                            player.SendData(PacketTypes.PlayerSlot, "", player.Index, s);
+                        }
+                        catch
+                        {
+                            break;
+                        }
                     }
 
                     if (player.TPlayer != null && player.TPlayer.selectedItem >= 0 && player.TPlayer.selectedItem < 59)
                     {
-                        NetMessage.SendData((int)PacketTypes.PlayerSlot, -1, -1, null, player.Index, player.TPlayer.selectedItem);
+                        try
+                        {
+                            NetMessage.SendData((int)PacketTypes.PlayerSlot, -1, -1, null, player.Index, player.TPlayer.selectedItem);
+                        }
+                        catch { }
                     }
                     return;
                 }
@@ -1658,7 +1674,7 @@ namespace Univers.MultiWorld
             }
             catch (Exception ex)
             {
-                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal restore SSC '{player.Name}': {ex.Message}");
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal restore SSC '{player.Name}': {ex}");
             }
             finally
             {

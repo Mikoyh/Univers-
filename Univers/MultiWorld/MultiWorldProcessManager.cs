@@ -877,17 +877,40 @@ namespace Univers.MultiWorld
             try
             {
                 Directory.CreateDirectory(targetPlugins);
-                var expectedDlls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (string file in Directory.GetFiles(sourcePlugins, "*.dll"))
+                var expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string file in Directory.GetFiles(sourcePlugins))
                 {
                     string fileName = Path.GetFileName(file);
+                    string ext = Path.GetExtension(fileName);
+                    if (ext.Equals(".db", StringComparison.OrdinalIgnoreCase) ||
+                        ext.Equals(".sqlite", StringComparison.OrdinalIgnoreCase) ||
+                        ext.Equals(".journal", StringComparison.OrdinalIgnoreCase) ||
+                        ext.Equals(".log", StringComparison.OrdinalIgnoreCase) ||
+                        fileName.EndsWith("-log.db", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
                     if (excluded.Contains(fileName))
                     {
                         continue;
                     }
 
-                    expectedDlls.Add(fileName);
+                    expectedFiles.Add(fileName);
                     string dst = Path.Combine(targetPlugins, fileName);
+                    bool isConfigLike = ext.Equals(".json", StringComparison.OrdinalIgnoreCase) &&
+                                        !fileName.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase) &&
+                                        !fileName.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase);
+
+                    if (isConfigLike)
+                    {
+                        if (!File.Exists(dst))
+                        {
+                            File.Copy(file, dst, false);
+                        }
+                        continue;
+                    }
+
                     var srcInfo = new FileInfo(file);
                     var dstInfo = new FileInfo(dst);
                     if (!dstInfo.Exists || dstInfo.Length != srcInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
@@ -899,7 +922,7 @@ namespace Univers.MultiWorld
                 foreach (string existing in Directory.GetFiles(targetPlugins, "*.dll"))
                 {
                     string fileName = Path.GetFileName(existing);
-                    if (!expectedDlls.Contains(fileName))
+                    if (!expectedFiles.Contains(fileName))
                     {
                         try { File.Delete(existing); } catch { }
                     }
@@ -993,7 +1016,15 @@ namespace Univers.MultiWorld
                 line.Contains("joined", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("left", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("kick", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("booted", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("denied", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("blocked", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("rejected", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("refused", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("anticheat", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("executed:", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("said:", StringComparison.OrdinalIgnoreCase) ||
                 line.Contains("password", StringComparison.OrdinalIgnoreCase) ||
