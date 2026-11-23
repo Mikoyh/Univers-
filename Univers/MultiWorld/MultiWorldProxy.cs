@@ -365,13 +365,13 @@ namespace Univers.MultiWorld
                 byte newBackendSlot = 255;
                 while (true)
                 {
-                    byte[]? hs = await ReadPacketAsync(newStream, connectCts.Token);
+                    var (hs, readDetail) = await ReadPacketDetailedAsync(newStream, connectCts.Token);
                     if (hs == null)
                     {
                         string cause = connectCts.IsCancellationRequested
                             ? (session.Cts.IsCancellationRequested ? "Sesi client terputus saat handshake." : "Timeout 10d menunggu respons ContinueConnecting dari backend.")
-                            : "Backend tujuan menutup koneksi saat handshake.";
-                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {cause}");
+                            : $"Backend tujuan menutup koneksi saat handshake ({readDetail}).";
+                        TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' (Port {targetPort}) gagal: {cause}");
                         return (false, cause);
                     }
 
@@ -852,6 +852,45 @@ namespace Univers.MultiWorld
             {
                 return string.Empty;
             }
+        }
+
+        private static async Task<(byte[]? Packet, string Detail)> ReadPacketDetailedAsync(NetworkStream stream, CancellationToken ct)
+        {
+            byte[] lenBuf = new byte[2];
+            var (okHdr, hdrDetail) = await ReadExactDetailedAsync(stream, lenBuf, 0, 2, ct);
+            if (!okHdr) return (null, hdrDetail);
+
+            ushort totalLen = BinaryPrimitives.ReadUInt16LittleEndian(lenBuf);
+            if (totalLen < 3) return (null, $"Header len invalid={totalLen} (bytes={lenBuf[0]:X2}-{lenBuf[1]:X2})");
+
+            byte[] packet = new byte[totalLen];
+            packet[0] = lenBuf[0];
+            packet[1] = lenBuf[1];
+
+            var (okBody, bodyDetail) = await ReadExactDetailedAsync(stream, packet, 2, totalLen - 2, ct);
+            if (!okBody) return (null, bodyDetail);
+            return (packet, "ok");
+        }
+
+        private static async Task<(bool Ok, string Detail)> ReadExactDetailedAsync(NetworkStream stream, byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            int readTotal = 0;
+            while (readTotal < count)
+            {
+                int n;
+                try
+                {
+                    n = await stream.ReadAsync(buffer.AsMemory(offset + readTotal, count - readTotal), ct);
+                }
+                catch (Exception ex)
+                {
+                    return (false, $"{ex.GetType().Name}: {ex.Message}");
+                }
+
+                if (n <= 0) return (false, $"EOF n={n} setelah {readTotal}/{count} byte");
+                readTotal += n;
+            }
+            return (true, "ok");
         }
 
         private static async Task<byte[]?> ReadPacketAsync(NetworkStream stream, CancellationToken ct)

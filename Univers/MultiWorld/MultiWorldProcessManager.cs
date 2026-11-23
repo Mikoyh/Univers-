@@ -43,6 +43,7 @@ namespace Univers.MultiWorld
         public DateTime KeepAliveUntilUtc { get; set; } = DateTime.UtcNow;
         public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
         public bool IpcRegistered { get; set; } = false;
+        public volatile bool PortListeningSeen = false;
         public bool LastBootWasAutoCreate { get; set; } = false;
         public int LastExitCode { get; set; } = 0;
         public string LastProgressLine { get; set; } = string.Empty;
@@ -334,6 +335,7 @@ namespace Univers.MultiWorld
                     DateTime bootStart = DateTime.UtcNow;
                     rt.State = WorldRuntimeState.Booting;
                     rt.IpcRegistered = false;
+                    rt.PortListeningSeen = false;
                     rt.LastBootWasAutoCreate = willGenerate;
                     rt.LastExitCode = 0;
                     rt.LastProgressLine = string.Empty;
@@ -433,7 +435,7 @@ namespace Univers.MultiWorld
                     return (false, $"Child '{def.Id}' tertutup sebelum siap. Log: {tail}");
                 }
 
-                if (rt.IpcRegistered && IsTcpPortListening(def.Port))
+                if (rt.IpcRegistered && (rt.PortListeningSeen || IsTcpPortListening(def.Port)))
                 {
                     await Task.Delay(1500); // Tunggu TShock & map selesai inisialisasi penuh sebelum player masuk
                     DateTime readyNow = DateTime.UtcNow;
@@ -467,7 +469,7 @@ namespace Univers.MultiWorld
                 await Task.Delay(350);
             }
 
-            if (rt.IpcRegistered && IsTcpPortListening(def.Port))
+            if (rt.IpcRegistered && (rt.PortListeningSeen || IsTcpPortListening(def.Port)))
             {
                 DateTime readyNow = DateTime.UtcNow;
                 rt.State = WorldRuntimeState.Running;
@@ -876,50 +878,63 @@ namespace Univers.MultiWorld
 
             try
             {
-                Directory.CreateDirectory(targetPlugins);
-                var expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (string file in Directory.GetFiles(sourcePlugins))
+                SyncPluginDirectory(sourcePlugins, targetPlugins, excluded, isRoot: true);
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menyinkronkan ServerPlugins ke child: {ex.Message}");
+            }
+        }
+
+        private static void SyncPluginDirectory(string sourceDir, string targetDir, HashSet<string>? excludedRootFiles, bool isRoot)
+        {
+            Directory.CreateDirectory(targetDir);
+            var expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string file in Directory.GetFiles(sourceDir))
+            {
+                string fileName = Path.GetFileName(file);
+                string ext = Path.GetExtension(fileName);
+                if (ext.Equals(".db", StringComparison.OrdinalIgnoreCase) ||
+                    ext.Equals(".sqlite", StringComparison.OrdinalIgnoreCase) ||
+                    ext.Equals(".journal", StringComparison.OrdinalIgnoreCase) ||
+                    ext.Equals(".log", StringComparison.OrdinalIgnoreCase) ||
+                    fileName.EndsWith("-log.db", StringComparison.OrdinalIgnoreCase))
                 {
-                    string fileName = Path.GetFileName(file);
-                    string ext = Path.GetExtension(fileName);
-                    if (ext.Equals(".db", StringComparison.OrdinalIgnoreCase) ||
-                        ext.Equals(".sqlite", StringComparison.OrdinalIgnoreCase) ||
-                        ext.Equals(".journal", StringComparison.OrdinalIgnoreCase) ||
-                        ext.Equals(".log", StringComparison.OrdinalIgnoreCase) ||
-                        fileName.EndsWith("-log.db", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    if (excluded.Contains(fileName))
-                    {
-                        continue;
-                    }
-
-                    expectedFiles.Add(fileName);
-                    string dst = Path.Combine(targetPlugins, fileName);
-                    bool isConfigLike = ext.Equals(".json", StringComparison.OrdinalIgnoreCase) &&
-                                        !fileName.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase) &&
-                                        !fileName.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase);
-
-                    if (isConfigLike)
-                    {
-                        if (!File.Exists(dst))
-                        {
-                            File.Copy(file, dst, false);
-                        }
-                        continue;
-                    }
-
-                    var srcInfo = new FileInfo(file);
-                    var dstInfo = new FileInfo(dst);
-                    if (!dstInfo.Exists || dstInfo.Length != srcInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
-                    {
-                        File.Copy(file, dst, true);
-                    }
+                    continue;
                 }
 
-                foreach (string existing in Directory.GetFiles(targetPlugins, "*.dll"))
+                if (isRoot && excludedRootFiles != null && excludedRootFiles.Contains(fileName))
+                {
+                    continue;
+                }
+
+                expectedFiles.Add(fileName);
+                string dst = Path.Combine(targetDir, fileName);
+                bool isConfigLike = ext.Equals(".json", StringComparison.OrdinalIgnoreCase) &&
+                                    !fileName.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase) &&
+                                    !fileName.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase);
+
+                if (isConfigLike)
+                {
+                    if (!File.Exists(dst))
+                    {
+                        File.Copy(file, dst, false);
+                    }
+                    continue;
+                }
+
+                var srcInfo = new FileInfo(file);
+                var dstInfo = new FileInfo(dst);
+                if (!dstInfo.Exists || dstInfo.Length != srcInfo.Length || srcInfo.LastWriteTimeUtc > dstInfo.LastWriteTimeUtc)
+                {
+                    File.Copy(file, dst, true);
+                }
+            }
+
+            if (isRoot)
+            {
+                foreach (string existing in Directory.GetFiles(targetDir, "*.dll"))
                 {
                     string fileName = Path.GetFileName(existing);
                     if (!expectedFiles.Contains(fileName))
@@ -928,9 +943,26 @@ namespace Univers.MultiWorld
                     }
                 }
             }
-            catch (Exception ex)
+
+            foreach (string subDir in Directory.GetDirectories(sourceDir))
             {
-                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Gagal menyinkronkan ServerPlugins ke child: {ex.Message}");
+                string subName = Path.GetFileName(subDir);
+                if (subName.StartsWith(".", StringComparison.Ordinal)) continue;
+                SyncPluginDirectory(subDir, Path.Combine(targetDir, subName), null, isRoot: false);
+            }
+        }
+
+        public string GetRecentLogsSummary(string worldId, int maxLines = 12)
+        {
+            if (!_children.TryGetValue(worldId, out var rt))
+            {
+                return "(proses child tidak ditemukan)";
+            }
+            lock (rt.LogLock)
+            {
+                return rt.RecentLogs.Count == 0
+                    ? "(tidak ada output)"
+                    : string.Join(" | ", rt.RecentLogs.TakeLast(Math.Max(1, maxLines)));
             }
         }
 
@@ -986,6 +1018,11 @@ namespace Univers.MultiWorld
             {
                 rt.RecentLogs.Enqueue(line);
                 while (rt.RecentLogs.Count > 25) rt.RecentLogs.Dequeue();
+            }
+
+            if (line.Contains("Listening on port", StringComparison.OrdinalIgnoreCase))
+            {
+                rt.PortListeningSeen = true;
             }
 
             if (line.Contains("Generating", StringComparison.OrdinalIgnoreCase) ||

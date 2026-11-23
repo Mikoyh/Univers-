@@ -2047,6 +2047,10 @@ namespace Univers.MultiWorld
             {
                 _ = HandleMasterPresenceEventAsync("world_switch", playerName, target.Id);
             }
+            else if (!target.IsHub && ProcessManager != null)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Log terakhir '{target.Id}': {ProcessManager.GetRecentLogsSummary(target.Id, 12)}");
+            }
             return result;
         }
 
@@ -2355,6 +2359,10 @@ namespace Univers.MultiWorld
                             if (okSw)
                             {
                                 _ = HandleMasterPresenceEventAsync("world_switch", req.PlayerName, target.Id);
+                            }
+                            else if (!target.IsHub && ProcessManager != null)
+                            {
+                                TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Log terakhir '{target.Id}': {ProcessManager.GetRecentLogsSummary(target.Id, 12)}");
                             }
                             return new IpcResponse { Success = okSw, Message = msgSw };
                         }
