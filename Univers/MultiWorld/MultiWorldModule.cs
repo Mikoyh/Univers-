@@ -191,12 +191,6 @@ namespace Univers.MultiWorld
                 return;
             }
 
-            if (player.HasPermission("tshock.ignore.ssc"))
-            {
-                player.SendWarningMessage("[SSC Info] Akun/grup kamu punya izin 'tshock.ignore.ssc' (atau '*'), jadi TShock otomatis membiarkan karakter lokal Terraria kamu masuk!");
-                return;
-            }
-
             // Jika TShock UUID auto-login memicu PlayerPostLogin di Child sebelum packet ticket diproses, klaim ticket dulu
             if (IsChildProcess && !_pendingSscRestores.ContainsKey(player.Name))
             {
@@ -855,7 +849,6 @@ namespace Univers.MultiWorld
             _claimedTickets.TryRemove(player.Name, out _);
 
             if (Main.ServerSideCharacter && player.RealPlayer &&
-                !player.HasPermission("tshock.ignore.ssc") &&
                 (_pendingSscRestores.ContainsKey(player.Name) || IsSscRestoreGuarded(player.Name)))
             {
                 player.IgnoreSSCPackets = true;
@@ -1071,7 +1064,6 @@ namespace Univers.MultiWorld
             }
 
             if (Main.ServerSideCharacter && player.RealPlayer &&
-                !player.HasPermission("tshock.ignore.ssc") &&
                 (player.IgnoreSSCPackets || _pendingSscRestores.ContainsKey(player.Name) || IsSscRestoreGuarded(player.Name)) &&
                 (args.MsgID == PacketTypes.PlayerSlot ||
                  args.MsgID == PacketTypes.PlayerHp ||
@@ -1227,7 +1219,7 @@ namespace Univers.MultiWorld
                 bool sscDbApplied = false;
 
                 // Lindungi SSC dari paket handshake replay & pre-apply sebelum TShock.OnGreetPlayer berjalan
-                if (Main.ServerSideCharacter && player.RealPlayer && !player.HasPermission("tshock.ignore.ssc"))
+                if (Main.ServerSideCharacter && player.RealPlayer)
                 {
                     player.IgnoreSSCPackets = true;
                     _sscRestoreGuardUntil[player.Name] = DateTime.UtcNow.AddSeconds(4);
@@ -1272,7 +1264,7 @@ namespace Univers.MultiWorld
 
                 if (freshlyClaimed)
                 {
-                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Auto-Auth '{player.Name}' ({CurrentWorldId}) -> Group '{player.Group?.Name ?? resolvedGroupName}', AccId={player.Account?.ID ?? 0}, SSC={(string.IsNullOrEmpty(effectiveSscJson) ? "0B" : $"{effectiveSscJson.Length}B")}, DbSaved={sscDbApplied}, IgnoreSSC={player.HasPermission("tshock.ignore.ssc")}.");
+                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] Auto-Auth '{player.Name}' ({CurrentWorldId}) -> Group '{player.Group?.Name ?? resolvedGroupName}', AccId={player.Account?.ID ?? 0}, SSC={(string.IsNullOrEmpty(effectiveSscJson) ? "0B" : $"{effectiveSscJson.Length}B")}, DbSaved={sscDbApplied}.");
                 }
             }
             catch (Exception ex)
