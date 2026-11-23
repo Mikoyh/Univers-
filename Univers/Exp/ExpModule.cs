@@ -169,13 +169,15 @@ namespace Univers.Exp
                     .Replace("[c/{LevelColor}:Lv.{Level}]", "[c/{LevelColor}:[][c/{LevelColor}:{Level}][c/{LevelColor}:]]")
                     .Replace("Lv.{Level}", "{Level}");
 
+                string displayMessage = Univers.Chat.ChatModule.ProcessMentionsInMessage(player, rawText);
+
                 string formatted = safeTemplate
                     .Replace("{BadgeId}", badgeId.ToString())
                     .Replace("{Level}", data.Level.ToString())
                     .Replace("{LevelColor}", levelColor)
                     .Replace("{Prefix}", fullPrefix)
                     .Replace("{PlayerName}", player.Name)
-                    .Replace("{Message}", rawText);
+                    .Replace("{Message}", displayMessage);
 
                 if (Univers.MultiWorld.MultiWorldModule.IsCrossWorldChatActive)
                 {

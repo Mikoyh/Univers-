@@ -1,6 +1,6 @@
 /*
  * ==============================================================================
- * ChatModule.cs - Modul Mentions (@tag) dengan Glowing Chat & Getaran/Alert, serta Auto-AFK
+ * ChatModule.cs - Modul Mentions (@tag) dengan Glowing Chat & Alert SFX/Visual, serta Auto-AFK
  * Target: Terraria 1.4.5 Series / TShock 6.x (.NET 9.0 / C# 13)
  * ==============================================================================
  */
@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -31,7 +32,7 @@ namespace Univers.Chat
     public class ChatModule : IModule, IDependent, IDisposable, IReloadable
     {
         public string Name => "Univers Chat & AFK System";
-        public string Description => "Glowing @mentions with vibration alert & automated AFK idle detection";
+        public string Description => "Glowing @mentions with visual/audio alert & automated AFK idle detection";
         public Version Version => new Version(2, 0, 0);
         public string Author => "Univers Team";
 
@@ -45,6 +46,8 @@ namespace Univers.Chat
         public static ChatConfig Config { get; private set; } = new ChatConfig();
 
         private static readonly ConcurrentDictionary<string, PlayerAfkInfo> _afkProfiles = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _lastWhisperer = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
         private static System.Timers.Timer? _afkCheckTimer;
 
         public void Initialize()
@@ -53,11 +56,13 @@ namespace Univers.Chat
             Config = ChatConfig.Read();
 
             ServerApi.Hooks.ServerChat.Register(UniversPlugin.Instance, OnServerChat);
+            ServerApi.Hooks.NetGreetPlayer.Register(UniversPlugin.Instance, OnPlayerGreet);
+            ServerApi.Hooks.ServerLeave.Register(UniversPlugin.Instance, OnServerLeave);
+            GetDataHandlers.TileEdit += OnTileEdit;
             PlayerHooks.PlayerCommand += OnPlayerCommand;
             PlayerHooks.PlayerPostLogin += OnPlayerPostLogin;
-            ServerApi.Hooks.NetGreetPlayer.Register(UniversPlugin.Instance, OnPlayerGreet);
 
-            _afkCheckTimer = new System.Timers.Timer(10000); // Check every 10 seconds
+            _afkCheckTimer = new System.Timers.Timer(10000);
             _afkCheckTimer.Elapsed += CheckAfkTick;
             _afkCheckTimer.AutoReset = true;
             _afkCheckTimer.Start();
@@ -70,14 +75,17 @@ namespace Univers.Chat
         public void Dispose()
         {
             ServerApi.Hooks.ServerChat.Deregister(UniversPlugin.Instance, OnServerChat);
+            ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnPlayerGreet);
+            ServerApi.Hooks.ServerLeave.Deregister(UniversPlugin.Instance, OnServerLeave);
+            GetDataHandlers.TileEdit -= OnTileEdit;
             PlayerHooks.PlayerCommand -= OnPlayerCommand;
             PlayerHooks.PlayerPostLogin -= OnPlayerPostLogin;
-            ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnPlayerGreet);
 
             _afkCheckTimer?.Stop();
             _afkCheckTimer?.Dispose();
 
             _afkProfiles.Clear();
+            _lastWhisperer.Clear();
             Log.Info("[Univers.Chat] Modul Chat & AFK dibongkar (Disposed).");
         }
 
@@ -111,6 +119,23 @@ namespace Univers.Chat
             };
         }
 
+        private static void OnServerLeave(LeaveEventArgs e)
+        {
+            var player = TShock.Players[e.Who];
+            if (player == null || string.IsNullOrWhiteSpace(player.Name)) return;
+
+            _afkProfiles.TryRemove(player.Name, out _);
+            _lastWhisperer.TryRemove(player.Name, out _);
+        }
+
+        private static void OnTileEdit(object? sender, GetDataHandlers.TileEditEventArgs e)
+        {
+            if (e.Player != null && e.Player.Active)
+            {
+                TouchActivity(e.Player);
+            }
+        }
+
         public static PlayerAfkInfo GetAfkInfo(string playerName)
         {
             return _afkProfiles.GetOrAdd(playerName, _ => new PlayerAfkInfo());
@@ -123,10 +148,11 @@ namespace Univers.Chat
             info.IsAfk = isAfk;
             info.Reason = string.IsNullOrWhiteSpace(reason) ? "Sedang AFK" : reason;
             info.LastActiveTime = DateTime.UtcNow;
+            if (player.TPlayer != null) info.LastPosition = player.TPlayer.position;
 
             if (isAfk)
             {
-                TSPlayer.All.SendInfoMessage($"[AFK] Player '{player.Name}' telah masuk mode AFK: {info.Reason}");
+                TSPlayer.All.SendInfoMessage($"[AFK] Player '{player.Name}' masuk mode AFK: {info.Reason}");
             }
             else
             {
@@ -145,9 +171,12 @@ namespace Univers.Chat
                 var info = GetAfkInfo(p.Name);
                 if (info.IsAfk) continue;
 
-                // Cek apakah posisi berubah atau baru aktif
-                float dist = Vector2.Distance(info.LastPosition, p.TPlayer.position);
-                if (dist > 16f) // Bergerak lebih dari 1 tile
+                bool hasMovedOrUsed =
+                    Vector2.Distance(info.LastPosition, p.TPlayer.position) > 16f ||
+                    p.TPlayer.controlUseItem ||
+                    p.TPlayer.controlJump;
+
+                if (hasMovedOrUsed)
                 {
                     info.LastPosition = p.TPlayer.position;
                     info.LastActiveTime = DateTime.UtcNow;
@@ -159,7 +188,12 @@ namespace Univers.Chat
                 {
                     info.IsAfk = true;
                     info.Reason = $"Idle selama {(int)idleMinutes} menit";
-                    TSPlayer.All.SendInfoMessage($"[AFK] Player '{p.Name}' otomatis masuk mode AFK ({info.Reason}).");
+                    string pName = p.Name;
+                    string reason = info.Reason;
+                    QueueMainThread(() =>
+                    {
+                        TSPlayer.All.SendInfoMessage($"[AFK] Player '{pName}' otomatis masuk mode AFK ({reason}).");
+                    });
                 }
             }
         }
@@ -174,70 +208,102 @@ namespace Univers.Chat
             if (info.IsAfk)
             {
                 info.IsAfk = false;
-                TSPlayer.All.SendInfoMessage($"[AFK] Player '{player.Name}' kembali aktif dari AFK.");
+                string pName = player.Name;
+                QueueMainThread(() =>
+                {
+                    TSPlayer.All.SendInfoMessage($"[AFK] Player '{pName}' kembali aktif dari AFK.");
+                });
             }
+        }
+
+        public static string ProcessMentionsInMessage(TSPlayer sender, string rawText)
+        {
+            if (sender == null || string.IsNullOrWhiteSpace(rawText) || !Config.EnableMentionSystem)
+            {
+                return rawText;
+            }
+
+            string processedText = rawText;
+            string hex = string.IsNullOrWhiteSpace(Config.MentionColorHex) ? "facc15" : Config.MentionColorHex;
+
+            foreach (var p in TShock.Players)
+            {
+                if (p == null || !p.Active || string.IsNullOrWhiteSpace(p.Name)) continue;
+
+                string pattern = $@"(?<!\w)@{Regex.Escape(p.Name)}(?!\w)";
+                if (Regex.IsMatch(rawText, pattern, RegexOptions.IgnoreCase))
+                {
+                    string glowingMention = $"[c/{hex}:@{p.Name}]";
+                    processedText = Regex.Replace(
+                        processedText,
+                        pattern,
+                        glowingMention,
+                        RegexOptions.IgnoreCase
+                    );
+
+                    var targetPlayer = p;
+                    var senderPlayer = sender;
+                    QueueMainThread(() =>
+                    {
+                        if (targetPlayer == null || !targetPlayer.Active || targetPlayer.TPlayer == null) return;
+
+                        try
+                        {
+                            int projIdx = Projectile.NewProjectile(
+                                Projectile.GetNoneSource(),
+                                targetPlayer.TPlayer.Top,
+                                new Vector2(0f, -3.5f),
+                                ProjectileID.ConfettiGun,
+                                0,
+                                0f,
+                                Main.myPlayer
+                            );
+                            if (projIdx >= 0 && projIdx < Main.maxProjectiles)
+                            {
+                                Main.projectile[projIdx].timeLeft = 10;
+                                NetMessage.SendData((int)PacketTypes.ProjectileNew, targetPlayer.Index, -1, null, projIdx);
+                            }
+                        }
+                        catch { }
+
+                        targetPlayer.SendData(
+                            PacketTypes.CreateCombatTextExtended,
+                            $"MENTION DARI {senderPlayer.Name}!",
+                            (int)Color.Gold.PackedValue,
+                            targetPlayer.TPlayer.Center.X,
+                            targetPlayer.TPlayer.Center.Y - 28f
+                        );
+
+                        targetPlayer.SendInfoMessage($"[c/{hex}:[MENTION]] Kamu di-tag oleh {senderPlayer.Name}: \"{rawText}\"");
+
+                        var targetAfk = GetAfkInfo(targetPlayer.Name);
+                        if (targetAfk.IsAfk)
+                        {
+                            senderPlayer.SendErrorMessage($"[AFK Auto-Reply] Player '{targetPlayer.Name}' sedang AFK ({targetAfk.Reason}). Pesan kamu akan dibaca saat kembali.");
+                        }
+                    });
+                }
+            }
+
+            return processedText;
         }
 
         private static void OnServerChat(ServerChatEventArgs e)
         {
-            if (e.Handled || string.IsNullOrWhiteSpace(e.Text)) return;
+            if (string.IsNullOrWhiteSpace(e.Text)) return;
 
             var sender = TShock.Players[e.Who];
             if (sender == null || !sender.Active) return;
 
             TouchActivity(sender);
 
-            string rawText = e.Text.Trim();
-            if (rawText.StartsWith("/") || rawText.StartsWith(".")) return; // Biarkan command ditangani TShock
+            if (e.Handled) return;
 
+            string rawText = e.Text.Trim();
+            if (rawText.StartsWith("/") || rawText.StartsWith(".")) return;
             if (!Config.EnableMentionSystem) return;
 
-            // Cek mention @namauser
-            string processedText = rawText;
-            foreach (var p in TShock.Players)
-            {
-                if (p == null || !p.Active || string.IsNullOrWhiteSpace(p.Name)) continue;
-
-                string mentionTag = $"@{p.Name}";
-                if (rawText.Contains(mentionTag, StringComparison.OrdinalIgnoreCase))
-                {
-                    // Format glowing text untuk mentioned user
-                    string glowingMention = $"[c/{Config.MentionColorHex}:@{p.Name}]";
-                    processedText = System.Text.RegularExpressions.Regex.Replace(
-                        processedText,
-                        $"@{p.Name}",
-                        glowingMention,
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase
-                    );
-
-                    // Kirim getaran / alert / combat text dan suara ke target player
-                    _mainThreadQueue.Enqueue(() =>
-                    {
-                        // Suara ping / level up agar berdering di HP/PC player
-                        NetMessage.PlaySound(29, (int)p.TPlayer.Center.X, (int)p.TPlayer.Center.Y, 105, 1f, 0f);
-
-                        // Combat text di kepala player tanda di-mention
-                        p.SendData(
-                            PacketTypes.CreateCombatTextExtended,
-                            $"MEMO DARI {sender.Name}!",
-                            (int)Color.Gold.PackedValue,
-                            p.TPlayer.Center.X,
-                            p.TPlayer.Center.Y - 24
-                        );
-
-                        p.SendInfoMessage($"[UNIVERS MENTION] Kamu di-mention oleh {sender.Name}: \"{rawText}\"");
-
-                        // Cek apakah target sedang AFK -> kirim balasan otomatis ke sender
-                        var targetAfk = GetAfkInfo(p.Name);
-                        if (targetAfk.IsAfk)
-                        {
-                            sender.SendErrorMessage($"[AFK Auto-Reply] Player '{p.Name}' sedang AFK ({targetAfk.Reason}). Pesan kamu akan dibaca saat kembali.");
-                        }
-                    });
-                }
-            }
-
-            // Jika ada perubahan mention, ganti teks chat yang disiarkan
+            string processedText = ProcessMentionsInMessage(sender, rawText);
             if (processedText != rawText)
             {
                 e.Handled = true;
@@ -258,22 +324,34 @@ namespace Univers.Chat
             TouchActivity(args.Player);
 
             string cmd = args.CommandName?.ToLowerInvariant() ?? string.Empty;
-            // Cek whisper / private message cmd: w, whisper, tell, m, r, reply
-            if (cmd == "w" || cmd == "whisper" || cmd == "tell" || cmd == "m" || cmd == "r" || cmd == "reply")
+            if (cmd == "w" || cmd == "whisper" || cmd == "tell" || cmd == "m")
             {
                 if (args.Parameters.Count > 0)
                 {
-                    string targetNameOrMsg = args.Parameters[0];
-                    TSPlayer? target = null;
-                    if (cmd != "r" && cmd != "reply")
+                    string targetName = args.Parameters[0];
+                    var target = TShock.Players.FirstOrDefault(p =>
+                        p != null && p.Active && p.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+
+                    if (target != null)
                     {
-                        target = TShock.Players.FirstOrDefault(p => p != null && p.Active && p.Name.Equals(targetNameOrMsg, StringComparison.OrdinalIgnoreCase));
+                        _lastWhisperer[target.Name] = args.Player.Name;
+                        _lastWhisperer[args.Player.Name] = target.Name;
+
+                        var targetAfk = GetAfkInfo(target.Name);
+                        if (targetAfk.IsAfk)
+                        {
+                            args.Player.SendErrorMessage($"[AFK Auto-Reply] Player '{target.Name}' sedang AFK ({targetAfk.Reason}). Pesan pribadi tidak dapat dibalas sekarang.");
+                        }
                     }
-                    else
-                    {
-                        // Untuk /r atau /reply, TShock menyimpan last whisperer. Kita cek apakah player tersebut afk.
-                        // Jika target tidak ditemukan via parameter pertama, scan semua player yang aktif atau biarkan TShock handle.
-                    }
+                }
+            }
+            else if (cmd == "r" || cmd == "reply")
+            {
+                if (_lastWhisperer.TryGetValue(args.Player.Name, out string? lastTargetName) &&
+                    !string.IsNullOrWhiteSpace(lastTargetName))
+                {
+                    var target = TShock.Players.FirstOrDefault(p =>
+                        p != null && p.Active && p.Name.Equals(lastTargetName, StringComparison.OrdinalIgnoreCase));
 
                     if (target != null)
                     {
@@ -286,8 +364,6 @@ namespace Univers.Chat
                 }
             }
         }
-
-        private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
 
         public static void QueueMainThread(Action action)
         {

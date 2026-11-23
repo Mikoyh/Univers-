@@ -109,7 +109,7 @@ namespace Univers
                 // [10] Modul Chat Mentions & Auto-AFK (Univers)
                 var chatMod = new ChatModule();
                 chatMod.Initialize();
-                ServerApi.Hooks.Update.Register(this, OnUpdate);
+                ServerApi.Hooks.GameUpdate.Register(this, OnUpdate);
 
                 TShock.Log.ConsoleInfo("[Univers Core] 10 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
             }
@@ -124,7 +124,7 @@ namespace Univers
             if (disposing)
             {
                 GeneralHooks.ReloadEvent -= OnReload;
-                try { ServerApi.Hooks.Update.Deregister(this, OnUpdate); } catch { }
+                try { ServerApi.Hooks.GameUpdate.Deregister(this, OnUpdate); } catch { }
 
                 try { ChatModule.Instance?.Dispose(); } catch { }
                 try { SurvivalModule.Dispose(); } catch { }

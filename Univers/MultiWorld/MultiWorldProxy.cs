@@ -169,7 +169,7 @@ namespace Univers.MultiWorld
             return FindSession(playerName, null, null, null);
         }
 
-        public ProxySession? FindSession(string playerName, string? clientUuid = null, int? backendSlot = null, string? currentWorldId = null)
+        public ProxySession? FindSession(string? playerName, string? clientUuid = null, int? backendSlot = null, string? currentWorldId = null)
         {
             if (!string.IsNullOrWhiteSpace(playerName))
             {
