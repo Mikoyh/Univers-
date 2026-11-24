@@ -752,6 +752,81 @@ namespace Univers.Discord
             return totalDeleted;
         }
 
+        // Ambil semua role di guild (id -> name) untuk memetakan role yg sudah ada.
+        public async Task<List<(string Id, string Name)>> GetGuildRolesAsync(string guildId, CancellationToken ct = default)
+        {
+            var list = new List<(string, string)>();
+            if (string.IsNullOrWhiteSpace(guildId)) return list;
+            try
+            {
+                using var resp = await _http.GetAsync($"{RestBaseUrl}/guilds/{guildId}/roles", ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var arr = JArray.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    foreach (var r in arr)
+                    {
+                        string? id = r["id"]?.ToString();
+                        string? name = r["name"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(id) && name != null) list.Add((id!, name));
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        // Buat role baru. colorHex = 6 char hex (mis. "f97316"). Return role ID baru atau null.
+        public async Task<string?> CreateGuildRoleAsync(string guildId, string name, string colorHex = "99aab5", CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(guildId) || string.IsNullOrWhiteSpace(name)) return null;
+
+            int color = 0x99AAB5;
+            if (!string.IsNullOrWhiteSpace(colorHex))
+            {
+                try { color = Convert.ToInt32(colorHex.TrimStart('#'), 16); } catch { }
+            }
+
+            var body = new JObject
+            {
+                ["name"] = name,
+                ["color"] = color,
+                ["mentionable"] = true,
+                ["hoist"] = false
+            };
+            try
+            {
+                using var reqContent = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
+                using var resp = await _http.PostAsync($"{RestBaseUrl}/guilds/{guildId}/roles", reqContent, ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var jo = JObject.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    return jo["id"]?.ToString();
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // Ambil role ID milik member (untuk hindari hapus role yg bukan milik sistem).
+        public async Task<List<string>?> GetMemberRoleIdsAsync(string guildId, string userId, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(guildId) || string.IsNullOrWhiteSpace(userId)) return null;
+            try
+            {
+                using var resp = await _http.GetAsync($"{RestBaseUrl}/guilds/{guildId}/members/{userId}", ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var jo = JObject.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    var roles = new List<string>();
+                    if (jo["roles"] is JArray arr)
+                        foreach (var r in arr) { var s = r?.ToString(); if (!string.IsNullOrWhiteSpace(s)) roles.Add(s!); }
+                    return roles;
+                }
+            }
+            catch { }
+            return null;
+        }
+
         public async Task<bool> AddGuildMemberRoleAsync(string guildId, string userId, string roleId)
         {
             if (string.IsNullOrWhiteSpace(guildId) || string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(roleId))

@@ -52,6 +52,21 @@ namespace Univers.Discord
         // Cocok kalau lu & partner punya role sama. Boleh isi beberapa role sekaligus.
         public List<string> ProtectRoleIds { get; set; } = new();
 
+        // AUTO-SYNC ROLE RANK & ELEMENT KE DISCORD
+        // Bot otomatis bikin role (jika belum ada) & menyimpan ID-nya di RankRoleIds / ElementRoleIds.
+        // Role cukup dibuat sekali; setelah itu lu bebas rename / pindah posisi role — ID tetap sama.
+        public bool SyncRankRoles { get; set; } = false;
+        public bool SyncElementRoles { get; set; } = false;
+
+        // Interval polling sinkronisasi real-time (detik). 0 = matikan polling (sync hanya saat verify).
+        public int RoleSyncPollSeconds { get; set; } = 60;
+
+        // Peta RankId -> RoleId Discord (dikelola otomatis oleh bot; boleh lu isi manual).
+        public Dictionary<string, string> RankRoleIds { get; set; } = new();
+
+        // Peta ElementId (VOLT/IGNIS/...) -> RoleId Discord (dikelola otomatis oleh bot).
+        public Dictionary<string, string> ElementRoleIds { get; set; } = new();
+
         // Sinkronisasi Nickname Discord setelah verifikasi (opsional)
         public bool SyncNicknameWithTShockName { get; set; } = false;
         public string NicknameFormat { get; set; } = "{AccountName}";
@@ -89,6 +104,9 @@ namespace Univers.Discord
                         cfg.AdminRoleIds ??= new List<string>();
                         cfg.ProtectUserIds ??= new List<string>();
                         cfg.ProtectRoleIds ??= new List<string>();
+                        cfg.RankRoleIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        cfg.ElementRoleIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        if (cfg.RoleSyncPollSeconds < 0) cfg.RoleSyncPollSeconds = 0;
                         if (cfg.VerifyCodeExpiryMinutes < 1) cfg.VerifyCodeExpiryMinutes = 5;
                         if (cfg.DiscordChatCooldownSeconds < 0) cfg.DiscordChatCooldownSeconds = 2;
                         if (string.IsNullOrWhiteSpace(cfg.CommandPrefix)) cfg.CommandPrefix = "!";

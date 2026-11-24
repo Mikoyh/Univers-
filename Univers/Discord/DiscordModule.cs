@@ -27,6 +27,7 @@ using Terraria;
 using TerrariaApi.Server;
 using TShockAPI;
 using Univers.Exp;
+using Univers.Aetherial;
 using Univers.MultiWorld;
 
 namespace Univers.Discord
@@ -63,6 +64,19 @@ namespace Univers.Discord
         private static readonly ConcurrentDictionary<string, PendingDiscordLinkRequest> _pendingDiscordRequests = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, DateTime> _lastUnverifiedWarnUtc = new();
         private static readonly ConcurrentDictionary<string, DateTime> _lastDiscordChatUtc = new();
+        private static DateTime _lastRoleSyncUtc = DateTime.MinValue;
+
+        // Peta nama tampilan + warna untuk 7 elemen.
+        private static readonly (string Id, string Name, string Hex)[] ElementDefs =
+        {
+            ("IGNIS", "Ignis", "f97316"),
+            ("GLACIAL", "Glacial", "38bdf8"),
+            ("TORRENT", "Torrent", "06b6d4"),
+            ("VOLT", "Volt", "a855f7"),
+            ("RADIANCE", "Radiance", "facc15"),
+            ("BRAMBLE", "Bramble", "10b981"),
+            ("OMNIA", "Omnia", "ef4444"),
+        };
 
         private const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -165,6 +179,7 @@ namespace Univers.Discord
                         _gateway?.EnqueueRelayMessage(Config.RelayChannelId, $"**[SERVER]** Univers MMORPG Bridge & Authenticator aktif (`{MultiWorldModule.CurrentWorldId}`).");
                     }
                     _ = PurgeVerifyChannelIfEnabledAsync();
+                    _ = EnsureRoleMapsAsync();
                 });
 
             _gateway.Start();
@@ -231,6 +246,16 @@ namespace Univers.Discord
             {
                 count++;
                 try { act(); } catch { }
+            }
+
+            // Real-time role sync ke Discord (polling berkala).
+            if (Config.RoleSyncPollSeconds > 0 && (Config.SyncRankRoles || Config.SyncElementRoles))
+            {
+                if ((DateTime.UtcNow - _lastRoleSyncUtc).TotalSeconds >= Config.RoleSyncPollSeconds)
+                {
+                    _lastRoleSyncUtc = DateTime.UtcNow;
+                    _ = Task.Run(SyncAllOnlineRolesAsync);
+                }
             }
         }
 
@@ -937,6 +962,174 @@ namespace Univers.Discord
 
                 await _gateway.ModifyGuildMemberNickAsync(guildId, discordUserId, nick);
             }
+
+            // Sinkronkan role rank + element saat verifikasi.
+            await SyncRolesForAccountAsync(guildId, discordUserId, accountName);
+        }
+
+        // Pastikan semua role rank (9) & element (7) sudah dibuat di Discord. Simpan ID ke config.
+        private static async Task EnsureRoleMapsAsync()
+        {
+            if (_gateway == null) return;
+            string guildId = Config.GuildId;
+            if (string.IsNullOrWhiteSpace(guildId)) return;
+            if (!Config.SyncRankRoles && !Config.SyncElementRoles) return;
+
+            try
+            {
+                var existing = await _gateway.GetGuildRolesAsync(guildId);
+                var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var r in existing) byName[r.Name] = r.Id;
+
+                bool changed = false;
+
+                if (Config.SyncRankRoles)
+                {
+                    foreach (var rank in RankModule.Config.Ranks)
+                    {
+                        if (Config.RankRoleIds.TryGetValue(rank.Id, out var rid) && !string.IsNullOrWhiteSpace(rid))
+                            continue;
+                        if (byName.TryGetValue(rank.Name, out var found))
+                        {
+                            Config.RankRoleIds[rank.Id] = found; changed = true; continue;
+                        }
+                        var created = await _gateway.CreateGuildRoleAsync(guildId, rank.Name, "99aab5");
+                        if (!string.IsNullOrWhiteSpace(created))
+                        {
+                            Config.RankRoleIds[rank.Id] = created!;
+                            byName[rank.Name] = created!;
+                            changed = true;
+                        }
+                    }
+                }
+
+                if (Config.SyncElementRoles)
+                {
+                    foreach (var el in ElementDefs)
+                    {
+                        if (Config.ElementRoleIds.TryGetValue(el.Id, out var rid) && !string.IsNullOrWhiteSpace(rid))
+                            continue;
+                        if (byName.TryGetValue(el.Name, out var found))
+                        {
+                            Config.ElementRoleIds[el.Id] = found; changed = true; continue;
+                        }
+                        var created = await _gateway.CreateGuildRoleAsync(guildId, el.Name, el.Hex);
+                        if (!string.IsNullOrWhiteSpace(created))
+                        {
+                            Config.ElementRoleIds[el.Id] = created!;
+                            byName[el.Name] = created!;
+                            changed = true;
+                        }
+                    }
+                }
+
+                if (changed && !string.IsNullOrEmpty(_configPath))
+                {
+                    Config.Save(_configPath);
+                    TShock.Log.ConsoleInfo($"[Univers.Discord] Role rank ({Config.RankRoleIds.Count}) & element ({Config.ElementRoleIds.Count}) siap.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.Discord] Gagal menyiapkan role Discord: {ex.Message}");
+            }
+        }
+
+        // Sinkronkan role rank + element untuk satu member (hapus role sistem lain yg tidak dipakai).
+        private static async Task SyncRolesForAccountAsync(string guildId, string discordUserId, string accountName)
+        {
+            if (_gateway == null || string.IsNullOrWhiteSpace(guildId) || string.IsNullOrWhiteSpace(discordUserId)) return;
+            if (!Config.SyncRankRoles && !Config.SyncElementRoles) return;
+
+            var current = await _gateway.GetMemberRoleIdsAsync(guildId, discordUserId);
+            if (current == null) return;
+            var curSet = new HashSet<string>(current);
+
+            if (Config.SyncRankRoles && Config.RankRoleIds.Count > 0)
+            {
+                string rankId = GetRankId(accountName);
+                var allRank = new HashSet<string>(Config.RankRoleIds.Values);
+                string? want = Config.RankRoleIds.TryGetValue(rankId, out var rr) ? rr : null;
+                foreach (var rid in allRank)
+                {
+                    if (string.IsNullOrWhiteSpace(rid)) continue;
+                    if (rid == want)
+                    {
+                        if (!curSet.Contains(rid)) { if (await _gateway.AddGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Add(rid); }
+                    }
+                    else if (curSet.Contains(rid))
+                    {
+                        if (await _gateway.RemoveGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Remove(rid);
+                    }
+                }
+            }
+
+            if (Config.SyncElementRoles && Config.ElementRoleIds.Count > 0)
+            {
+                string? elemId = GetElementId(accountName);
+                var allElem = new HashSet<string>(Config.ElementRoleIds.Values);
+                string? want = (elemId != null && Config.ElementRoleIds.TryGetValue(elemId, out var er)) ? er : null;
+                foreach (var rid in allElem)
+                {
+                    if (string.IsNullOrWhiteSpace(rid)) continue;
+                    if (rid == want)
+                    {
+                        if (!curSet.Contains(rid)) { if (await _gateway.AddGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Add(rid); }
+                    }
+                    else if (curSet.Contains(rid))
+                    {
+                        if (await _gateway.RemoveGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Remove(rid);
+                    }
+                }
+            }
+        }
+
+        // Polling: sinkronkan semua player online yg sudah verify.
+        private static async Task SyncAllOnlineRolesAsync()
+        {
+            if (_gateway == null || Database == null) return;
+            string guildId = Config.GuildId;
+            if (string.IsNullOrWhiteSpace(guildId)) return;
+
+            foreach (var player in TShock.Players)
+            {
+                if (player == null || !player.Active || !player.IsLoggedIn || player.Account == null) continue;
+                var link = Database.GetByAccount(player.Account.Name);
+                if (link == null || !link.IsVerified) continue;
+
+                try { await SyncRolesForAccountAsync(guildId, link.DiscordUserId, link.AccountName); }
+                catch { }
+            }
+        }
+
+        private static string GetRankId(string accountName)
+        {
+            try
+            {
+                var data = RankModule.Database?.GetOrCreate(accountName);
+                var rank = data != null ? RankModule.Config?.GetRankByIndex(data.RankIndex) : null;
+                if (rank != null && !string.IsNullOrWhiteSpace(rank.Id)) return rank.Id;
+            }
+            catch { }
+            return "Mortal";
+        }
+
+        private static string? GetElementId(string accountName)
+        {
+            try
+            {
+                foreach (var p in TShock.Players)
+                {
+                    if (p != null && p.Active && p.IsLoggedIn && p.Account != null &&
+                        p.Account.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string el = AetherialApi.GetPlayerElement(p);
+                        return string.IsNullOrWhiteSpace(el) ? null : el.ToUpperInvariant();
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static async Task RemoveVerifiedRoleSafeAsync(string msgGuildId, string discordUserId)
