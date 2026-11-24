@@ -30,6 +30,9 @@ using Univers.Survival;
 using Skynomi.Ranks;
 using Skynomi.Economy;
 using Univers.Chat;
+using Univers.Sanctuary;
+using Univers.Tutorial;
+using Univers.Discord;
 
 namespace Univers
 {
@@ -109,9 +112,19 @@ namespace Univers
                 // [10] Modul Chat Mentions & Auto-AFK (Univers)
                 var chatMod = new ChatModule();
                 chatMod.Initialize();
+
+                // [11] Modul Sanctuary (Segel Sihir Pelindung Lobby)
+                SanctuaryModule.Initialize(savePath);
+
+                // [12] Modul Tutorial & Altar Pembangkitan Elemen (Univers)
+                TutorialModule.Initialize(savePath);
+
+                // [13] Modul Discord Relay & TShock Authenticator (Univers)
+                DiscordModule.Initialize(savePath);
+
                 ServerApi.Hooks.GameUpdate.Register(this, OnUpdate);
 
-                TShock.Log.ConsoleInfo("[Univers Core] 10 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
+                TShock.Log.ConsoleInfo("[Univers Core] 13 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
             }
             catch (Exception ex)
             {
@@ -126,6 +139,9 @@ namespace Univers
                 GeneralHooks.ReloadEvent -= OnReload;
                 try { ServerApi.Hooks.GameUpdate.Deregister(this, OnUpdate); } catch { }
 
+                try { DiscordModule.Dispose(); } catch { }
+                try { TutorialModule.Dispose(); } catch { }
+                try { SanctuaryModule.Dispose(); } catch { }
                 try { ChatModule.Instance?.Dispose(); } catch { }
                 try { SurvivalModule.Dispose(); } catch { }
                 try { HousingModule.Dispose(); } catch { }
@@ -161,6 +177,9 @@ namespace Univers
                 HousingModule.Reload();
                 SurvivalModule.Reload();
                 ChatModule.Instance?.Reload(e);
+                SanctuaryModule.Reload();
+                TutorialModule.Reload();
+                DiscordModule.Reload();
                 TShock.Log.ConsoleInfo("[Univers Core] Konfigurasi seluruh modul berhasil dimuat ulang.");
             }
             catch (Exception ex)

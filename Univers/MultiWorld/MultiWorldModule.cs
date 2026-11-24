@@ -24,6 +24,7 @@ using TerrariaApi.Server;
 using TShockAPI;
 using TShockAPI.DB;
 using TShockAPI.Hooks;
+using Univers.Discord;
 
 namespace Univers.MultiWorld
 {
@@ -674,10 +675,11 @@ namespace Univers.MultiWorld
      {
          BroadcastLocalFormatted(formattedChat, Color.White);
 
-         // Jika di Master Hub (lobby), cetak chat bersih ke console
+         // Jika di Master Hub (lobby), cetak chat bersih ke console & teruskan ke Discord
          if (!IsChildProcess)
          {
              TShock.Log.ConsoleInfo($"[Chat:{CurrentWorldId}] {StripTerrariaColorTags(formattedChat)}");
+             DiscordModule.NotifyInGameChat(CurrentWorldId, sender.Name, formattedChat);
          }
 
          if (!Config.CrossWorldChat) return;
@@ -699,6 +701,72 @@ namespace Univers.MultiWorld
          {
              _ = PushMessageToOtherChildrenAsync(CurrentWorldId, "push_chat", crossWorldMessage, 255, 255, 255);
          }
+     }
+
+     public static void BroadcastExternalGlobalChat(string message, byte r = 255, byte g = 255, byte b = 255)
+     {
+         if (string.IsNullOrWhiteSpace(message)) return;
+         var c = new Color(r, g, b);
+
+         if (HasActiveRealPlayers())
+         {
+             _mainThreadQueue.Enqueue(() => BroadcastLocalFormatted(message, c, skipJustJoined: false));
+         }
+
+         if (!IsChildProcess)
+         {
+             _ = PushMessageToOtherChildrenAsync(null, "push_chat", message, r, g, b);
+         }
+     }
+
+     public static void SendDirectMessageToGlobalPlayer(string nameOrAccount, string message, byte r = 125, byte g = 211, byte b = 252)
+     {
+         if (string.IsNullOrWhiteSpace(nameOrAccount) || string.IsNullOrWhiteSpace(message)) return;
+         var c = new Color(r, g, b);
+
+         _mainThreadQueue.Enqueue(() =>
+         {
+             var localTarget = TShock.Players.FirstOrDefault(p =>
+                 p != null && p.Active && p.RealPlayer &&
+                 (p.Name.Equals(nameOrAccount, StringComparison.OrdinalIgnoreCase) ||
+                  (p.IsLoggedIn && p.Account != null && p.Account.Name.Equals(nameOrAccount, StringComparison.OrdinalIgnoreCase))));
+             if (localTarget != null)
+             {
+                 localTarget.SendMessage(message, c);
+             }
+         });
+
+         if (!IsChildProcess && ProcessManager != null)
+         {
+             var targets = ProcessManager.GetRunningCallbackTargets(null);
+             foreach (var t in targets)
+             {
+                 _ = MultiWorldIpcClient.SendAsync(t.CallbackPort, new IpcRequest
+                 {
+                     Action = "push_player_notice",
+                     PlayerName = nameOrAccount,
+                     FormattedMessage = message,
+                     ColorR = r,
+                     ColorG = g,
+                     ColorB = b
+                 }, timeoutMs: 2000);
+             }
+         }
+     }
+
+     public static Task<IpcResponse> SendDiscordRpcToMasterAsync(IpcRequest req)
+     {
+         return MultiWorldIpcClient.SendAsync(MasterIpcPort, req, timeoutMs: 4000);
+     }
+
+     public static Task<IpcResponse> SendChildEventToDiscordAsync(string worldId, string message)
+     {
+         return MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
+         {
+             Action = "discord_event",
+             WorldId = worldId,
+             FormattedMessage = message
+         }, timeoutMs: 2500);
      }
 
              private static string StripTerrariaColorTags(string text)
@@ -770,6 +838,21 @@ namespace Univers.MultiWorld
                     {
                         BroadcastLocalFormatted(msg, c, skipJustJoined: true);
                     }
+                });
+                return Task.FromResult(new IpcResponse { Success = true });
+            }
+            else if (req.Action == "push_player_notice")
+            {
+                string targetName = req.PlayerName;
+                string msg = req.FormattedMessage;
+                var c = new Color(req.ColorR, req.ColorG, req.ColorB);
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    var localTarget = TShock.Players.FirstOrDefault(p =>
+                        p != null && p.Active && p.RealPlayer &&
+                        (p.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase) ||
+                         (p.IsLoggedIn && p.Account != null && p.Account.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase))));
+                    localTarget?.SendMessage(msg, c);
                 });
                 return Task.FromResult(new IpcResponse { Success = true });
             }
@@ -858,12 +941,14 @@ namespace Univers.MultiWorld
             {
                 string msg = $"[MultiWorld] {playerName} bergabung ke server ({badge}).";
                 await PushMessageToOtherChildrenAsync(worldId, "push_notice", msg, 148, 163, 184);
+                DiscordModule.NotifyPresenceEvent("server_join", worldId, playerName);
             }
             else if (eventKind == "server_leave")
             {
                 string msg = $"[MultiWorld] {playerName} keluar dari server.";
                 BroadcastLocalFormatted(msg, Color.LightSlateGray);
                 await PushMessageToOtherChildrenAsync(worldId, "push_notice", msg, 148, 163, 184);
+                DiscordModule.NotifyPresenceEvent("server_leave", worldId, playerName);
             }
             else if (eventKind == "world_switch")
             {
@@ -1262,6 +1347,18 @@ namespace Univers.MultiWorld
                     {
                         if (p != null && p.Active && p.IsLoggedIn && p.TPlayer != null)
                         {
+                            if (p.IgnoreSSCPackets && !string.IsNullOrWhiteSpace(p.Name) && !IsSscRestoreGuarded(p.Name))
+                            {
+                                if (_pendingSscRestores.ContainsKey(p.Name))
+                                {
+                                    ApplyPendingSscRestore(p, clearPendingAndGuard: true);
+                                }
+                                else
+                                {
+                                    _pendingSscRestores.TryRemove(p.Name, out _);
+                                    p.IgnoreSSCPackets = false;
+                                }
+                            }
                             TrackSlotPlayer(p);
                             SavePlayerSscEverywhere(p, synchronousIpc: false);
                         }
@@ -2831,6 +2928,7 @@ namespace Univers.MultiWorld
                              cleanConsole = cleanConsole.Substring(prefixToStrip.Length);
                          }
                          TShock.Log.ConsoleInfo($"[Chat:{req.WorldId}] {cleanConsole}");
+                         DiscordModule.NotifyInGameChat(req.WorldId, req.PlayerName, req.FormattedMessage);
 
                          if (HasActiveRealPlayers())
                          {
@@ -3029,6 +3127,17 @@ namespace Univers.MultiWorld
 
                     case "presence_event":
                         await HandleMasterPresenceEventAsync(req.AdminSubAction, req.PlayerName, req.WorldId);
+                        return new IpcResponse { Success = true };
+
+                    case "discord_rpc":
+                        return await DiscordModule.HandleMasterDiscordRpcAsync(
+                            req.AdminSubAction,
+                            req.AccountName,
+                            req.PlayerName,
+                            req.FormattedMessage);
+
+                    case "discord_event":
+                        DiscordModule.NotifyExternalEventFromChild(req.WorldId, req.FormattedMessage);
                         return new IpcResponse { Success = true };
 
                     case "claim_ticket":

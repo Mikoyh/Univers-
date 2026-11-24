@@ -445,18 +445,26 @@ namespace Univers.MultiWorld
                     if (srvId == 49) // CompleteConnection
                     {
                         session.CurrentWorldId = targetWorldId;
-                        session.IsSwitching = false;
                         byte[] mappedComplete = PrepareOutboundPacket(session, srvPkt, session.BackendSlot, session.ClientSlot);
                         await SendPacketAsync(session.ClientStream, session.ClientWriteLock, mappedComplete, session.Cts.Token);
 
                         // Kirim Packet 12 dengan koordinat spawn (-1, -1) agar server memakai titik spawn world BARU (bukan koordinat lobby!)
+                        // Pastikan IsSwitching baru dimatikan SETELAH Packet 12 terkirim agar PlayerControls/PlayerSlot/SyncProjectile tidak menyalip spawn.
                         byte[]? cachedSpawn;
                         lock (session.CacheLock) cachedSpawn = session.PlayerSpawnPacket;
                         if (cachedSpawn != null && cachedSpawn.Length >= 8)
                         {
                             byte[] mappedSpawn12 = PrepareOutboundPacket(session, cachedSpawn, session.ClientSlot, newBackendSlot);
+                            if (ReferenceEquals(mappedSpawn12, cachedSpawn))
+                            {
+                                mappedSpawn12 = (byte[])cachedSpawn.Clone();
+                            }
                             BinaryPrimitives.WriteInt16LittleEndian(mappedSpawn12.AsSpan(4, 2), -1);
                             BinaryPrimitives.WriteInt16LittleEndian(mappedSpawn12.AsSpan(6, 2), -1);
+                            if (mappedSpawn12.Length >= 17)
+                            {
+                                mappedSpawn12[16] = 1; // PlayerSpawnContext.SpawningIntoWorld
+                            }
                             await SendPacketAsync(newStream, session.BackendWriteLock, mappedSpawn12, session.Cts.Token);
                         }
 
@@ -484,12 +492,15 @@ namespace Univers.MultiWorld
 
                 if (!completedSpawn)
                 {
+                    session.IsSwitching = false;
                     string pkts = seenIds.Count > 0 ? string.Join(",", seenIds.TakeLast(20)) : "-";
                     string msg = $"Timeout memuat data world '{targetWorldId}'.";
                     TShock.Log.ConsoleWarn($"[Univers.MultiWorld] Switch '{playerName}' -> '{targetWorldId}' gagal: {msg} | Paket: [{pkts}]");
                     await SendClientDisconnectAndDisposeAsync(session, msg);
                     return (false, msg);
                 }
+
+                session.IsSwitching = false;
 
                 // Jalankan pump loop baru untuk Backend B
                 _ = PumpBackendToClientAsync(session, newBackend, newStream);
@@ -748,7 +759,8 @@ namespace Univers.MultiWorld
                 or 45 or 50 or 51 or 55 or 58 or 62 or 66 or 80 or 84 or 96 or 99 or 102 or 117
                 or 118 or 120 or 121 or 124 or 125 or 134 or 135 or 139 or 147 => 3,
                 65 => (packet[3] & 3) != 1 ? 4 : -1, // Teleport: flag bits 0..1 == 1 adalah NPC teleport, bukan player
-                22 or 29 => 5,
+                22 or 24 or 29 => 5,
+                91 => (packet.Length >= 10 && packet[7] == 2) ? 8 : -1, // SyncEmoteBubble anchor player
                 27 => 21, // SyncProjectile: owner byte ada di offset 21 pada Terraria 1.4.x/1.4.5
                 _ => -1
             };
