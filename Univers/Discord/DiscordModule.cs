@@ -179,7 +179,7 @@ namespace Univers.Discord
                     TShock.Log.ConsoleInfo($"[Univers.Discord] Bot '@{botName}' terhubung ke Discord! Relay={(string.IsNullOrWhiteSpace(Config.RelayChannelId) ? "UNSET" : Config.RelayChannelId)} | AuthGate={(Config.RequireVerifiedAccountToChat ? "STRICT" : "OPEN")}");
                     if (!string.IsNullOrWhiteSpace(Config.RelayChannelId))
                     {
-                        _gateway?.EnqueueRelayMessage(Config.RelayChannelId, $"**[SERVER]** Univers MMORPG Bridge & Authenticator aktif (`{MultiWorldModule.CurrentWorldId}`).");
+                        _gateway?.EnqueueRelayMessage(Config.RelayChannelId, $"**Portal ke dunia `{MultiWorldModule.CurrentWorldId.ToUpperInvariant()}` telah terbuka.**");
                     }
                     _ = PurgeVerifyChannelIfEnabledAsync();
                     _ = EnsureRoleMapsAsync();
@@ -1300,7 +1300,10 @@ namespace Univers.Discord
         private static string SanitizeDiscordMarkdown(string input)
         {
             if (string.IsNullOrEmpty(input)) return string.Empty;
-            return input.Replace("`", "'").Replace("*", "").Replace("_", "\\_").Replace("@", "@\u200b");
+            // Buang karakter non-ASCII (emoji dll) agar aman tampil di chat Terraria
+            var chars = input.Where(c => c >= 32 && c <= 126).ToArray();
+            string ascii = new string(chars).Trim();
+            return ascii.Replace("`", "'").Replace("*", "").Replace("_", "\\_").Replace("@", "@\u200b");
         }
 
         private static string GenerateCode(int length)
