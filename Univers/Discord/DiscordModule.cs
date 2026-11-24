@@ -743,7 +743,7 @@ namespace Univers.Discord
                 return (resp.Success, resp.Message);
             }
 
-            return await HandleMasterDiscordRpcAsync(subAction, accountName, playerName, arg ?? string.Empty);
+            return await ProcessMasterRpcInternalAsync(subAction, accountName, playerName, arg ?? string.Empty);
         }
 
         public static async Task<IpcResponse> HandleMasterDiscordRpcAsync(string subAction, string accountName, string playerName, string arg)
