@@ -248,7 +248,7 @@ namespace Univers.Sanctuary
             }
         }
 
-        private static void OnNpcTransform(NpcTransformEventArgs args)
+        private static void OnNpcTransform(NpcTransformationEventArgs args)
         {
             if (args.Handled || !IsSanctuaryActiveInCurrentWorld()) return;
             if (args.NpcId < 0 || args.NpcId >= Main.maxNPCs) return;
