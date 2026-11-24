@@ -471,8 +471,8 @@ namespace Univers.Discord
             if (string.IsNullOrWhiteSpace(cleanBody)) return;
 
             string formattedInGame = string.IsNullOrWhiteSpace(rankPart)
-                ? $"[c/5865F2:[Discord]] {senderDisplay}: {cleanBody}"
-                : $"[c/5865F2:[Discord]] {rankPart} {senderDisplay}: {cleanBody}";
+                ? $"[c/5865F2:DISCORD] {senderDisplay}: {cleanBody}"
+                : $"[c/5865F2:DISCORD] {rankPart} {senderDisplay}: {cleanBody}";
 
             MultiWorldModule.BroadcastExternalGlobalChat(formattedInGame, 255, 255, 255);
             TShock.Log.ConsoleInfo($"[Chat:Discord] {senderDisplay}: {cleanBody}");
@@ -532,10 +532,9 @@ namespace Univers.Discord
 
             await ApplyDiscordRewardsAndSyncAsync(msg.GuildId, msg.AuthorId, pending.AccountName);
 
-            await _gateway.SendMessageAsync(
+            await SendTempWarningAsync(
                 msg.ChannelId,
-                $"**[VERIFIED]** <@{msg.AuthorId}> berhasil terhubung dengan akun resmi server **`{pending.AccountName}`**! Sekarang kamu bisa mengirim pesan di channel relay.",
-                suppressMentions: false);
+                $"**[VERIFIED]** <@{msg.AuthorId}> berhasil terhubung dengan akun resmi server **`{pending.AccountName}`**! Sekarang kamu bisa mengirim pesan di channel relay.");
 
             MultiWorldModule.SendDirectMessageToGlobalPlayer(
                 pending.PlayerName,
