@@ -164,6 +164,7 @@ namespace Univers.Discord
                     {
                         _gateway?.EnqueueRelayMessage(Config.RelayChannelId, $"**[SERVER]** Univers MMORPG Bridge & Authenticator aktif (`{MultiWorldModule.CurrentWorldId}`).");
                     }
+                    _ = PurgeVerifyChannelIfEnabledAsync();
                 });
 
             _gateway.Start();
@@ -181,6 +182,36 @@ namespace Univers.Discord
         private static void RestartGateway()
         {
             StartGatewayIfConfigured();
+        }
+
+        // Bersihkan seluruh chat lama di #verify saat bot nyala. Skip pesan bot, guild owner, & ProtectUserIds.
+        private static async Task PurgeVerifyChannelIfEnabledAsync()
+        {
+            if (_gateway == null || !Config.Enabled || !Config.PurgeVerifyChannelOnStartup) return;
+            if (string.IsNullOrWhiteSpace(Config.VerifyChannelId)) return;
+
+            try
+            {
+                int deleted = await _gateway.PurgeChannelAsync(
+                    Config.VerifyChannelId,
+                    Config.GuildId,
+                    Config.ProtectUserIds ?? new List<string>(),
+                    Config.ProtectRoleIds ?? new List<string>());
+
+                TShock.Log.ConsoleInfo($"[Univers.Discord] Bersih-bersih #verify selesai: {deleted} pesan dihapus (chat owner & admin dilewati).");
+
+                if (deleted > 0)
+                {
+                    await _gateway.SendMessageAsync(
+                        Config.VerifyChannelId,
+                        $"Channel dibersihkan ({deleted} pesan lama dihapus). Ketik `/verify` di game, lalu kirim `{Config.CommandPrefix}verify <KODE>`.",
+                        suppressMentions: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.Discord] Gagal bersih-bersih #verify: {ex.Message}");
+            }
         }
 
         private static string ResolveMasterUniversDir(string localUniversDir)

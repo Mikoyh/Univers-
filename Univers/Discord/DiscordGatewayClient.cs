@@ -629,6 +629,129 @@ namespace Univers.Discord
             catch { }
         }
 
+        // Ambil SEMUA ID member yang punya salah satu role di protectRoleIds (untuk sweep aman role-based).
+        public async Task<List<string>> GetMemberIdsByRolesAsync(string guildId, IEnumerable<string> roleIds, CancellationToken ct = default)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(guildId) || roleIds == null) return result;
+
+            var wanted = new HashSet<string>(roleIds.Where(r => !string.IsNullOrWhiteSpace(r)));
+            if (wanted.Count == 0) return result;
+
+            string? after = null;
+            while (!ct.IsCancellationRequested)
+            {
+                string url = $"{RestBaseUrl}/guilds/{guildId}/members?limit=1000";
+                if (!string.IsNullOrWhiteSpace(after)) url += $"&after={after}";
+
+                JArray page;
+                using (var resp = await _http.GetAsync(url, ct))
+                {
+                    if (!resp.IsSuccessStatusCode) break;
+                    page = JArray.Parse(await resp.Content.ReadAsStringAsync(ct));
+                }
+                if (page == null || page.Count == 0) break;
+
+                foreach (var m in page)
+                {
+                    string? uid = m["user"]?["id"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(uid)) continue;
+                    if (m["roles"] is JArray roles && roles.Any(r => wanted.Contains(r?.ToString() ?? string.Empty)))
+                    {
+                        result.Add(uid);
+                    }
+                }
+
+                after = page[page.Count - 1]?["user"]?["id"]?.ToString();
+                if (page.Count < 1000) break;
+            }
+
+            return result;
+        }
+
+        // Ambil ID pemilik server (guild owner) supaya chat-nya tidak ikut terhapus saat sweep.
+        public async Task<string?> GetGuildOwnerIdAsync(string guildId, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(guildId)) return null;
+            try
+            {
+                using var resp = await _http.GetAsync($"{RestBaseUrl}/guilds/{guildId}", ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var jo = JObject.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    return jo["owner_id"]?.ToString();
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // Hapus SELURUH pesan di channel (kecuali bot, guild owner, ProtectUserIds, & member ber-ProtectRoleIds).
+        // Pakai bulk-delete (maks 100 pesan / batch, pesan >14 hari di-skip Discord). Return jumlah terhapus.
+        public async Task<int> PurgeChannelAsync(string channelId, string guildId, IEnumerable<string> protectUserIds, IEnumerable<string>? protectRoleIds = null, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(channelId)) return 0;
+
+            var protectedSet = new HashSet<string>(protectUserIds ?? Enumerable.Empty<string>());
+            if (!string.IsNullOrWhiteSpace(BotUserId)) protectedSet.Add(BotUserId);
+            if (!string.IsNullOrWhiteSpace(guildId))
+            {
+                string? ownerId = await GetGuildOwnerIdAsync(guildId, ct);
+                if (!string.IsNullOrWhiteSpace(ownerId)) protectedSet.Add(ownerId!);
+
+                // Tambahkan semua member yang punya role owner/admin (role-based, buat partner).
+                foreach (var uid in await GetMemberIdsByRolesAsync(guildId, protectRoleIds ?? Enumerable.Empty<string>(), ct))
+                {
+                    protectedSet.Add(uid);
+                }
+            }
+
+            int totalDeleted = 0;
+            string? before = null;
+
+            while (!ct.IsCancellationRequested)
+            {
+                string url = $"{RestBaseUrl}/channels/{channelId}/messages?limit=100";
+                if (!string.IsNullOrWhiteSpace(before)) url += $"&before={before}";
+
+                JArray batch;
+                using (var resp = await _http.GetAsync(url, ct))
+                {
+                    if (!resp.IsSuccessStatusCode) break;
+                    batch = JArray.Parse(await resp.Content.ReadAsStringAsync(ct));
+                }
+                if (batch == null || batch.Count == 0) break;
+
+                before = batch[batch.Count - 1]?["id"]?.ToString();
+
+                var toDelete = batch
+                    .Where(m => !protectedSet.Contains(m["author"]?["id"]?.ToString() ?? string.Empty))
+                    .Select(m => m["id"]?.ToString())
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Select(id => id!)
+                    .ToList();
+
+                if (toDelete.Count == 0) continue;
+
+                // bulk-delete per maks 100 id
+                var body = new JObject { ["messages"] = new JArray(toDelete.Cast<object>().ToArray()) };
+                using (var req = new HttpRequestMessage(HttpMethod.Post, $"{RestBaseUrl}/channels/{channelId}/messages/bulk-delete")
+                {
+                    Content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json")
+                })
+                {
+                    using var resp = await _http.SendAsync(req, ct);
+                    if (resp.StatusCode == (HttpStatusCode)429) { await HandleRateLimitAsync(resp, ct); }
+                    totalDeleted += toDelete.Count;
+                }
+
+                await Task.Delay(600, ct);
+                if (batch.Count < 100) break;
+            }
+
+            return totalDeleted;
+        }
+
         public async Task<bool> AddGuildMemberRoleAsync(string guildId, string userId, string roleId)
         {
             if (string.IsNullOrWhiteSpace(guildId) || string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(roleId))

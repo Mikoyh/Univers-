@@ -41,6 +41,17 @@ namespace Univers.Discord
         public bool AutoDeleteVerifyMessages { get; set; } = true;
         public int UnverifiedWarningAutoDeleteSeconds { get; set; } = 10;
 
+        // Bersihkan SELURUH chat lama di #verify saat bot nyala (biar cara verify gak tenggelam).
+        // Yang di-SKIP otomatis: pesan bot, pemilik server (guild owner), dan ProtectUserIds.
+        public bool PurgeVerifyChannelOnStartup { get; set; } = false;
+
+        // ID User Discord (punya lu / admin) yang chat-nya TIDAK boleh ikut terhapus saat sweep.
+        public List<string> ProtectUserIds { get; set; } = new();
+
+        // ID Role Discord (mis. role Owner/Admin) — SEMUA member ber-role ini chat-nya diamankan saat sweep.
+        // Cocok kalau lu & partner punya role sama. Boleh isi beberapa role sekaligus.
+        public List<string> ProtectRoleIds { get; set; } = new();
+
         // Sinkronisasi Nickname Discord setelah verifikasi (opsional)
         public bool SyncNicknameWithTShockName { get; set; } = false;
         public string NicknameFormat { get; set; } = "{AccountName}";
@@ -76,6 +87,8 @@ namespace Univers.Discord
                     if (cfg != null)
                     {
                         cfg.AdminRoleIds ??= new List<string>();
+                        cfg.ProtectUserIds ??= new List<string>();
+                        cfg.ProtectRoleIds ??= new List<string>();
                         if (cfg.VerifyCodeExpiryMinutes < 1) cfg.VerifyCodeExpiryMinutes = 5;
                         if (cfg.DiscordChatCooldownSeconds < 0) cfg.DiscordChatCooldownSeconds = 2;
                         if (string.IsNullOrWhiteSpace(cfg.CommandPrefix)) cfg.CommandPrefix = "!";
