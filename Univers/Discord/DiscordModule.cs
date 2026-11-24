@@ -78,6 +78,9 @@ namespace Univers.Discord
             ("OMNIA", "Omnia", "ef4444"),
         };
 
+        // Cache nama role (Id -> Name) untuk menampilkan nama role admin di ingame.
+        private static readonly ConcurrentDictionary<string, string> _guildRoleNames = new(StringComparer.OrdinalIgnoreCase);
+
         private const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
         public static bool IsGatewayConnected => _gateway != null && _gateway.IsConnected;
@@ -180,6 +183,7 @@ namespace Univers.Discord
                     }
                     _ = PurgeVerifyChannelIfEnabledAsync();
                     _ = EnsureRoleMapsAsync();
+                    _ = CacheRoleNamesAsync();
                 });
 
             _gateway.Start();
@@ -197,6 +201,34 @@ namespace Univers.Discord
         private static void RestartGateway()
         {
             StartGatewayIfConfigured();
+        }
+
+        // Simpan peta Id->Name role guild utk tampilkan nama role admin di ingame.
+        private static async Task CacheRoleNamesAsync()
+        {
+            if (_gateway == null || string.IsNullOrWhiteSpace(Config.GuildId)) return;
+            try
+            {
+                foreach (var r in await _gateway.GetGuildRolesAsync(Config.GuildId))
+                {
+                    _guildRoleNames[r.Id] = r.Name;
+                }
+            }
+            catch { }
+        }
+
+        // Ambil nama role admin pertama yang dimiliki msg (berdasarkan AdminRoleIds).
+        private static string GetAdminRoleName(DiscordIncomingMessage msg)
+        {
+            if (Config.AdminRoleIds == null) return "Admin";
+            foreach (var rid in msg.RoleIds)
+            {
+                if (Config.AdminRoleIds.Contains(rid) && _guildRoleNames.TryGetValue(rid, out var nm) && !string.IsNullOrWhiteSpace(nm))
+                {
+                    return nm;
+                }
+            }
+            return "Admin";
         }
 
         // Bersihkan seluruh chat lama di #verify saat bot nyala. Skip pesan bot, guild owner, & ProtectUserIds.
@@ -457,7 +489,8 @@ namespace Univers.Discord
             if (!isRelayChannel || !Config.RelayDiscordChatToInGame) return;
 
             var link = Database.GetByDiscordId(msg.AuthorId);
-            if (Config.RequireVerifiedAccountToChat && (link == null || !link.IsVerified))
+            bool isAdminBypass = IsDiscordAdmin(msg);
+            if (!isAdminBypass && Config.RequireVerifiedAccountToChat && (link == null || !link.IsVerified))
             {
                 if (Config.DeleteUnverifiedMessagesInRelay)
                 {
@@ -490,8 +523,23 @@ namespace Univers.Discord
             }
             _lastDiscordChatUtc[msg.AuthorId] = chatNow;
 
-            string senderDisplay = link != null ? link.AccountName : msg.AuthorDisplayName;
-            string rankPart = link != null ? BuildInGameRankTag(link.AccountName) : "[c/94a3b8:Guest]";
+            string senderDisplay;
+            string rankPart;
+            if (link != null && link.IsVerified)
+            {
+                senderDisplay = link.AccountName;
+                rankPart = BuildInGameRankTag(link.AccountName);
+            }
+            else if (isAdminBypass)
+            {
+                senderDisplay = msg.AuthorDisplayName;
+                rankPart = $"[c/ef4444:{SanitizeDiscordMarkdown(GetAdminRoleName(msg))}]";
+            }
+            else
+            {
+                senderDisplay = msg.AuthorDisplayName;
+                rankPart = "[c/94a3b8:Guest]";
+            }
             string cleanBody = SanitizeDiscordChatForTerraria(content);
             if (string.IsNullOrWhiteSpace(cleanBody)) return;
 
@@ -979,7 +1027,11 @@ namespace Univers.Discord
             {
                 var existing = await _gateway.GetGuildRolesAsync(guildId);
                 var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var r in existing) byName[r.Name] = r.Id;
+                foreach (var r in existing)
+                {
+                    byName[r.Name] = r.Id;
+                    _guildRoleNames[r.Id] = r.Name;
+                }
 
                 bool changed = false;
 
