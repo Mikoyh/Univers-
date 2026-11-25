@@ -8,6 +8,7 @@
 using System;
 using Microsoft.Xna.Framework;
 using TShockAPI;
+using Univers.Bossing;
 using Univers.MultiWorld;
 
 namespace Univers.Sanctuary
@@ -90,12 +91,19 @@ namespace Univers.Sanctuary
             }
 
             bool isProtected = SanctuaryModule.IsSanctuaryActiveInCurrentWorld();
-            string statusText = isProtected ? "[c/4ade80:AKTIF MELINDUNGI]" : "[c/facc15:STANDBY / TIDAK AKTIF DI WORLD INI]";
+            bool isCenterSanctuary = BossingModule.IsBossingActiveInCurrentWorld();
+            string statusText = isProtected
+                ? "[c/4ade80:AKTIF MELINDUNGI PENUH]"
+                : (isCenterSanctuary ? $"[c/38bdf8:ZONA TENGAH AKTIF (+/-{BossingModule.Config.CenterSanctuaryRadiusTiles} tile Spawn)]" : "[c/facc15:STANDBY / TIDAK AKTIF DI WORLD INI]");
 
             player.SendMessage($"=== [ {cfg.BarrierName.ToUpperInvariant()} ] ===", Color.Gold);
             player.SendMessage($"[ LORE ] \"{cfg.LoreSummary}\"", new Color(186, 230, 253));
             player.SendMessage($"[ + ] Penjaga Legenda : {cfg.GuardianName}", Color.White);
             player.SendMessage($"[ + ] World Ini       : '{MultiWorldModule.CurrentWorldId}' -> {statusText}", Color.White);
+            if (isCenterSanctuary)
+            {
+                player.SendMessage($"[ + ] Arena Bossing   : Maks 1 Boss di KIRI & 1 Boss di KANAN Spawn (cek /bossing).", new Color(251, 191, 36));
+            }
             player.SendMessage($"[ + ] Proteksi        : Boss={(cfg.BlockBosses ? "DITOLAK" : "OFF")} | Monster={(cfg.BlockHostileMobs ? "DITOLAK" : "OFF")} | Event={(cfg.BlockEventsAndInvasions ? "DITOLAK" : "OFF")}", Color.White);
             player.SendMessage($"[ + ] Statistik Segel : {SanctuaryModule.TotalBlockedAttempts} ancaman telah ditolak sejak server menyala.", new Color(167, 243, 208));
 

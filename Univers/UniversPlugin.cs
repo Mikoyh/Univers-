@@ -33,6 +33,7 @@ using Univers.Chat;
 using Univers.Sanctuary;
 using Univers.Tutorial;
 using Univers.Discord;
+using Univers.Bossing;
 
 namespace Univers
 {
@@ -70,6 +71,12 @@ namespace Univers
         {
             Instance = this;
             GeneralHooks.ReloadEvent += OnReload;
+
+            try
+            {
+                TShock.Config.Settings.DisableUserJoinLeaveMessages = true;
+            }
+            catch { }
 
             string savePath = GetEffectiveSavePath();
             Directory.CreateDirectory(Path.Combine(savePath, "Skynomi"));
@@ -122,9 +129,12 @@ namespace Univers
                 // [13] Modul Discord Relay & TShock Authenticator (Univers)
                 DiscordModule.Initialize(savePath);
 
+                // [14] Modul Elden Ring Bossing (Univers)
+                BossingModule.Initialize(savePath);
+
                 ServerApi.Hooks.GameUpdate.Register(this, OnUpdate);
 
-                TShock.Log.ConsoleInfo("[Univers Core] 13 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
+                TShock.Log.ConsoleInfo("[Univers Core] 14 Modul Terintegrasi Berhasil Diaktifkan pada .NET 9.0!");
             }
             catch (Exception ex)
             {
@@ -139,6 +149,7 @@ namespace Univers
                 GeneralHooks.ReloadEvent -= OnReload;
                 try { ServerApi.Hooks.GameUpdate.Deregister(this, OnUpdate); } catch { }
 
+                try { BossingModule.Dispose(); } catch { }
                 try { DiscordModule.Dispose(); } catch { }
                 try { TutorialModule.Dispose(); } catch { }
                 try { SanctuaryModule.Dispose(); } catch { }
@@ -180,6 +191,7 @@ namespace Univers
                 SanctuaryModule.Reload();
                 TutorialModule.Reload();
                 DiscordModule.Reload();
+                BossingModule.Reload();
                 TShock.Log.ConsoleInfo("[Univers Core] Konfigurasi seluruh modul berhasil dimuat ulang.");
             }
             catch (Exception ex)

@@ -25,6 +25,7 @@ using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
 using Skynomi.Economy;
+using Univers.Bossing;
 using Univers.Exp;
 using Univers;
 
@@ -161,18 +162,41 @@ namespace Skynomi.Ranks
             };
         }
 
+        private static bool IsSameFightSide(int npcWhoA, int npcWhoB)
+        {
+            if (!BossingModule.IsBossingActiveInCurrentWorld()) return true;
+            var sideA = BossingModule.GetEncounterSideForNpc(npcWhoA);
+            var sideB = BossingModule.GetEncounterSideForNpc(npcWhoB);
+            if (sideA == BossArenaSide.None || sideB == BossArenaSide.None) return true;
+            return sideA == sideB;
+        }
+
+        private static string GetFightTrackingKey(string bossKey, NPC npc)
+        {
+            if (BossingModule.IsBossingActiveInCurrentWorld())
+            {
+                var side = BossingModule.GetEncounterSideForNpc(npc.whoAmI);
+                if (side != BossArenaSide.None)
+                {
+                    return $"{bossKey}#{side}";
+                }
+            }
+            return bossKey;
+        }
+
         public static bool IsBossDefeatNpc(NPC npc)
         {
             if (npc == null) return false;
 
-            // Eater of Worlds: defeated when all parts are dead
+            // Eater of Worlds: defeated when all parts on the same arena side are dead
             if (npc.type == NPCID.EaterofWorldsHead || npc.type == NPCID.EaterofWorldsBody || npc.type == NPCID.EaterofWorldsTail)
             {
                 for (int i = 0; i < Main.maxNPCs; i++)
                 {
                     var other = Main.npc[i];
                     if (other != null && other.active && other.whoAmI != npc.whoAmI &&
-                        (other.type == NPCID.EaterofWorldsHead || other.type == NPCID.EaterofWorldsBody || other.type == NPCID.EaterofWorldsTail))
+                        (other.type == NPCID.EaterofWorldsHead || other.type == NPCID.EaterofWorldsBody || other.type == NPCID.EaterofWorldsTail) &&
+                        IsSameFightSide(npc.whoAmI, other.whoAmI))
                     {
                         return false;
                     }
@@ -180,14 +204,15 @@ namespace Skynomi.Ranks
                 return true;
             }
 
-            // The Twins: defeated when both Retinazer and Spazmatism are dead
+            // The Twins: defeated when both Retinazer and Spazmatism on the same arena side are dead
             if (npc.type == NPCID.Retinazer || npc.type == NPCID.Spazmatism)
             {
                 for (int i = 0; i < Main.maxNPCs; i++)
                 {
                     var other = Main.npc[i];
                     if (other != null && other.active && other.whoAmI != npc.whoAmI &&
-                        (other.type == NPCID.Retinazer || other.type == NPCID.Spazmatism))
+                        (other.type == NPCID.Retinazer || other.type == NPCID.Spazmatism) &&
+                        IsSameFightSide(npc.whoAmI, other.whoAmI))
                     {
                         return false;
                     }
@@ -236,13 +261,15 @@ namespace Skynomi.Ranks
             string bossKey = IdentifyBossKey(npc);
             if (string.IsNullOrEmpty(bossKey)) return;
 
+            string trackingKey = GetFightTrackingKey(bossKey, npc);
+
             // Clamp damage to remaining NPC health to prevent overkill score inflation
             long damageDealt = Math.Max(1, Math.Min(args.Damage, npc.life));
 
-            var fight = ActiveFights.GetOrAdd(bossKey, key => new BossFightInstance
+            var fight = ActiveFights.GetOrAdd(trackingKey, _ => new BossFightInstance
             {
-                BossKey = key,
-                BossDisplayName = GetBossDisplayName(key, npc),
+                BossKey = bossKey,
+                BossDisplayName = GetBossDisplayName(bossKey, npc),
                 PrimaryNpcType = npc.type,
                 MaxLifeRecorded = npc.lifeMax
             });
@@ -259,23 +286,28 @@ namespace Skynomi.Ranks
             // Despawn check: clean up fights whose boss is no longer active in the world
             foreach (var kvp in ActiveFights.ToArray())
             {
-                string bossKey = kvp.Key;
+                string trackingKey = kvp.Key;
                 var fight = kvp.Value;
 
                 bool hasLivingNpc = false;
                 for (int i = 0; i < Main.maxNPCs; i++)
                 {
                     var npc = Main.npc[i];
-                    if (npc != null && npc.active && IdentifyBossKey(npc).Equals(bossKey, StringComparison.OrdinalIgnoreCase))
+                    if (npc != null && npc.active)
                     {
-                        hasLivingNpc = true;
-                        break;
+                        string npcBossKey = IdentifyBossKey(npc);
+                        if (!string.IsNullOrEmpty(npcBossKey) &&
+                            GetFightTrackingKey(npcBossKey, npc).Equals(trackingKey, StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasLivingNpc = true;
+                            break;
+                        }
                     }
                 }
 
                 if (!hasLivingNpc && (DateTime.UtcNow - fight.LastHitTime).TotalSeconds > 8)
                 {
-                    ActiveFights.TryRemove(bossKey, out _);
+                    ActiveFights.TryRemove(trackingKey, out _);
                 }
             }
         }
@@ -288,7 +320,9 @@ namespace Skynomi.Ranks
 
             if (!IsBossDefeatNpc(npc)) return;
 
-            if (!ActiveFights.TryRemove(bossKey, out var fight))
+            string trackingKey = GetFightTrackingKey(bossKey, npc);
+            if (!ActiveFights.TryRemove(trackingKey, out var fight) &&
+                !ActiveFights.TryRemove(bossKey, out fight))
             {
                 return;
             }
@@ -314,7 +348,7 @@ namespace Skynomi.Ranks
 
             var mvp = contributors[0];
 
-            int baseLife = Math.Max(1000, fight.MaxLifeRecorded);
+            int baseLife = Math.Max(1000, BossingModule.AdjustRecordedMaxLifeForRewards(npc.whoAmI, fight.MaxLifeRecorded, npc.type));
             double totalBaseShards = Math.Max(10.0, (baseLife / 1000.0) * 15.0);
             int totalBaseExp = Math.Max(150, (int)Math.Ceiling(Math.Sqrt(baseLife) * 4.0 + (baseLife / 30.0)));
 

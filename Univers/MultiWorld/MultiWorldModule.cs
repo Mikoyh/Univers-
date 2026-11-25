@@ -940,6 +940,7 @@ namespace Univers.MultiWorld
             if (eventKind == "server_join")
             {
                 string msg = $"[MultiWorld] {playerName} bergabung ke server ({badge}).";
+                BroadcastLocalFormatted(msg, Color.LightSlateGray);
                 await PushMessageToOtherChildrenAsync(worldId, "push_notice", msg, 148, 163, 184);
                 DiscordModule.NotifyPresenceEvent("server_join", worldId, playerName);
             }
@@ -1034,19 +1035,32 @@ namespace Univers.MultiWorld
                 var worldDef = Config.GetWorld(CurrentWorldId);
                 string title = worldDef?.DisplayName ?? CurrentWorldId;
                 player.SendMessage($"[MultiWorld] Kamu memasuki world '{title}' ({CurrentWorldId}). Ketik /lobby untuk kembali ke Hub.", Color.Aquamarine);
-            }
-            else if (!IsChildProcess)
-            {
-                // Fresh login ke server Hub -> catat IP asli dari Gateway Proxy & beritahu child worlds lain
-                var proxySession = Proxy?.FindSession(player.Name, player.UUID, player.Index, CurrentWorldId);
-                if (proxySession != null)
+
+                if (transferred && Config.CrossWorldPresenceNotices)
                 {
-                    TShock.Log.ConsoleInfo($"[Univers.MultiWorld] '{player.Name}' terhubung via Proxy IP: {proxySession.ClientRemoteIp}");
+                    string srcId = _recentTransferSources.TryGetValue(player.Name, out var sTuple) ? sTuple.SourceWorldId : string.Empty;
+                    var srcDef = Config.GetWorld(srcId);
+                    string srcDisplay = srcDef?.DisplayName ?? (!string.IsNullOrWhiteSpace(srcId) ? srcId : "world lain");
+                    string arriveMsg = $"[MultiWorld] {player.Name} telah tiba dari {srcDisplay}.";
+                    BroadcastLocalFormatted(arriveMsg, Color.LightSlateGray);
+                    _ = PushMessageToOtherChildrenAsync(CurrentWorldId, "push_notice", arriveMsg, 148, 163, 184);
+                }
+            }
+            else
+            {
+                // Fresh login ke server (Master atau Child) -> beritahu world lain
+                if (!IsChildProcess)
+                {
+                    var proxySession = Proxy?.FindSession(player.Name, player.UUID, player.Index, CurrentWorldId);
+                    if (proxySession != null)
+                    {
+                        TShock.Log.ConsoleInfo($"[Univers.MultiWorld] '{player.Name}' terhubung via Proxy IP: {proxySession.ClientRemoteIp}");
+                    }
                 }
 
                 NotifyMasterPresenceEvent("server_join", player.Name, CurrentWorldId);
 
-                if (Proxy != null && Proxy.IsListening && proxySession == null)
+                if (!IsChildProcess && Proxy != null && Proxy.IsListening && Proxy.FindSession(player.Name, player.UUID, player.Index, CurrentWorldId) == null)
                 {
                     int hubPort = ResolveListenPort(Config.MasterWorldPort);
                     player.SendWarningMessage($"[MultiWorld] Kamu masuk lewat port langsung ({hubPort}). Konek ke port {Proxy.ListenPort} agar bisa /mw tp pindah world!");
