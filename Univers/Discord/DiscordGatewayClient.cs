@@ -164,8 +164,16 @@ namespace Univers.Discord
                         ? AppendGatewayQuery(_resumeGatewayUrl!)
                         : await ResolveGatewayUrlAsync(ct);
 
+                    var sessionStart = DateTime.UtcNow;
                     await RunSingleGatewaySessionAsync(wsUrl, ct);
-                    backoffSec = 3;
+
+                    // Reset backoff HANYA jika sesi sempat stabil (>=60 detik).
+                    // Sesi yang mati cepat (rate-limit/close-loop) harus tetap di-backoff
+                    // supaya tidak hot-reconnect tiap 3 detik (penyebab spam & resiko ban gateway).
+                    if ((DateTime.UtcNow - sessionStart).TotalSeconds >= 60)
+                    {
+                        backoffSec = 3;
+                    }
                 }
                 catch (OperationCanceledException)
                 {

@@ -69,8 +69,10 @@ namespace Univers.Discord
         private static bool _lastBloodMoonState;
         private static bool _lastEclipseState;
         private static int _lastInvasionType;
-        private static bool _lastSavingWorldState;
         private static DateTime _lastWorldEventScanUtc = DateTime.MinValue;
+        // Pastikan broadcast "server started" & purge #verify hanya terjadi SEKALI per proses.
+        // Tanpa flag ini, setiap reconnect Gateway (yang kirim READY lagi) akan spam channel.
+        private static bool _startupAnnounced;
         private static readonly HashSet<int> _announcedTownNpcIndices = new();
         private static readonly HashSet<int> _announcedBossIndices = new();
 
@@ -212,11 +214,19 @@ namespace Univers.Discord
                 botName =>
                 {
                     TShock.Log.ConsoleInfo($"[Univers.Discord] Bot '@{botName}' terhubung ke Discord! Relay={(string.IsNullOrWhiteSpace(Config.RelayChannelId) ? "UNSET" : Config.RelayChannelId)} | AuthGate={(Config.RequireVerifiedAccountToChat ? "STRICT" : "OPEN")}");
-                    if (!string.IsNullOrWhiteSpace(Config.RelayChannelId))
+
+                    // onReady juga terpicu pada resume-reconnect. Hanya kirim notifikasi startup & purge
+                    // #verify sekali per proses, jangan tiap reconnect (penyebab spam "Portal terbuka").
+                    bool firstReadyThisProcess = !_startupAnnounced;
+                    _startupAnnounced = true;
+                    if (firstReadyThisProcess)
                     {
-                        BroadcastServerMessage("**[SERVER] Server has started! Portal ke dunia Univers telah terbuka.**\n*(Server has started! Portal to the Univers world is now open.)*");
+                        if (!string.IsNullOrWhiteSpace(Config.RelayChannelId))
+                        {
+                            BroadcastServerMessage("**[SERVER] Server has started! Portal ke dunia Univers telah terbuka.**\n*(Server has started! Portal to the Univers world is now open.)*");
+                        }
+                        _ = PurgeVerifyChannelIfEnabledAsync();
                     }
-                    _ = PurgeVerifyChannelIfEnabledAsync();
                     _ = EnsureRoleMapsAsync();
                     _ = CacheRoleNamesAsync();
                 });
