@@ -66,6 +66,29 @@ namespace Univers.Discord
         private static readonly ConcurrentDictionary<string, DateTime> _lastDiscordChatUtc = new();
         private static DateTime _lastRoleSyncUtc = DateTime.MinValue;
 
+        private static bool _lastBloodMoonState;
+        private static bool _lastEclipseState;
+        private static int _lastInvasionType;
+        private static bool _lastSavingWorldState;
+        private static DateTime _lastWorldEventScanUtc = DateTime.MinValue;
+        private static readonly HashSet<int> _announcedTownNpcIndices = new();
+        private static readonly HashSet<int> _announcedBossIndices = new();
+
+        public static void BroadcastServerMessage(string message)
+        {
+            if (!_initialized || !Config.Enabled) return;
+            if (string.IsNullOrWhiteSpace(message)) return;
+
+            if (MultiWorldModule.IsChildProcess)
+            {
+                _ = MultiWorldModule.SendChildEventToDiscordAsync(MultiWorldModule.CurrentWorldId, message);
+            }
+            else if (_gateway != null && _gateway.IsConnected && !string.IsNullOrWhiteSpace(Config.RelayChannelId))
+            {
+                _gateway.EnqueueRelayMessage(Config.RelayChannelId, message);
+            }
+        }
+
         // Peta nama tampilan + warna untuk 7 elemen.
         private static readonly (string Id, string Name, string Hex)[] ElementDefs =
         {
@@ -139,6 +162,18 @@ namespace Univers.Discord
             if (!_initialized) return;
             _initialized = false;
 
+            if (_gateway != null && _gateway.IsConnected && !string.IsNullOrWhiteSpace(Config.RelayChannelId))
+            {
+                try
+                {
+                    _gateway.SendMessageAsync(
+                        Config.RelayChannelId,
+                        "**[SERVER] Server shutdown. Portal ke dunia univers sedang tertutup.**\n*(Server shutdown. Portal to the Univers world is now closed.)*",
+                        suppressMentions: true).GetAwaiter().GetResult();
+                }
+                catch { }
+            }
+
             try { DiscordCommands.Unregister(); } catch { }
             try { ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate); } catch { }
             try { ServerApi.Hooks.NpcKilled.Deregister(UniversPlugin.Instance, OnNpcKilled); } catch { }
@@ -179,7 +214,7 @@ namespace Univers.Discord
                     TShock.Log.ConsoleInfo($"[Univers.Discord] Bot '@{botName}' terhubung ke Discord! Relay={(string.IsNullOrWhiteSpace(Config.RelayChannelId) ? "UNSET" : Config.RelayChannelId)} | AuthGate={(Config.RequireVerifiedAccountToChat ? "STRICT" : "OPEN")}");
                     if (!string.IsNullOrWhiteSpace(Config.RelayChannelId))
                     {
-                        _gateway?.EnqueueRelayMessage(Config.RelayChannelId, $"**Portal ke dunia `{MultiWorldModule.CurrentWorldId.ToUpperInvariant()}` telah terbuka.**");
+                        BroadcastServerMessage("**[SERVER] Server has started! Portal ke dunia Univers telah terbuka.**\n*(Server has started! Portal to the Univers world is now open.)*");
                     }
                     _ = PurgeVerifyChannelIfEnabledAsync();
                     _ = EnsureRoleMapsAsync();
@@ -289,6 +324,112 @@ namespace Univers.Discord
                     _ = Task.Run(SyncAllOnlineRolesAsync);
                 }
             }
+
+            // Pindai event dunia, save world, town NPC, dan boss spawn untuk relay ke Discord
+            if (!MultiWorldModule.IsChildProcess && (DateTime.UtcNow - _lastWorldEventScanUtc).TotalSeconds >= 2.5)
+            {
+                _lastWorldEventScanUtc = DateTime.UtcNow;
+                ScanAndBroadcastWorldEvents();
+            }
+        }
+
+        private static void ScanAndBroadcastWorldEvents()
+        {
+            if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
+
+            try
+            {
+                // 1. World Save Status
+                bool saving = Terraria.IO.WorldFile.savingWorld;
+                if (saving && !_lastSavingWorldState)
+                {
+                    _lastSavingWorldState = true;
+                    BroadcastServerMessage("[SERVER] Saving world data... / Menyimpan data world...");
+                }
+                else if (!saving && _lastSavingWorldState)
+                {
+                    _lastSavingWorldState = false;
+                    BroadcastServerMessage("[SERVER] World save completed. / Penyimpanan world selesai.");
+                }
+
+                // 2. Blood Moon State
+                if (Main.bloodMoon && !_lastBloodMoonState)
+                {
+                    _lastBloodMoonState = true;
+                    BroadcastServerMessage("[SERVER] A Blood Moon is rising... / Darah bulan mulai naik di malam hari!");
+                }
+                else if (!Main.bloodMoon && _lastBloodMoonState)
+                {
+                    _lastBloodMoonState = false;
+                }
+
+                // 3. Solar Eclipse State
+                if (Main.eclipse && !_lastEclipseState)
+                {
+                    _lastEclipseState = true;
+                    BroadcastServerMessage("[SERVER] A Solar Eclipse is happening! / Gerhana matahari terjadi!");
+                }
+                else if (!Main.eclipse && _lastEclipseState)
+                {
+                    _lastEclipseState = false;
+                }
+
+                // 4. Invasions
+                int inv = Main.invasionType;
+                if (inv > 0 && inv != _lastInvasionType)
+                {
+                    _lastInvasionType = inv;
+                    string invName = inv switch
+                    {
+                        1 => "The Goblin Army is approaching from the east! (Pasukan Goblin mendekat)",
+                        2 => "The Frost Legion has arrived! (Legiun Es tiba)",
+                        3 => "Pirates are arriving from the sea! (Bajak laut menyerang)",
+                        4 => "Martian Madness has begun! (Kegilaan Martian dimulai)",
+                        _ => "An invasion has begun! (Invasi dimulai)"
+                    };
+                    BroadcastServerMessage($"[SERVER] {invName}");
+                }
+                else if (inv == 0 && _lastInvasionType > 0)
+                {
+                    _lastInvasionType = 0;
+                    BroadcastServerMessage("[SERVER] The invasion has been defeated! / Invasi telah dikalahkan!");
+                }
+
+                // 5. Town NPC Arrivals & Boss Spawns
+                for (int i = 0; i < Main.maxNPCs; i++)
+                {
+                    var npc = Main.npc[i];
+                    if (npc == null || !npc.active) continue;
+
+                    // Town NPC
+                    if ((npc.townNPC || npc.isLikeATownNPC) && !string.IsNullOrEmpty(npc.GivenName))
+                    {
+                        if (_announcedTownNpcIndices.Add(i))
+                        {
+                            BroadcastServerMessage($"[SERVER] {npc.FullName} ({npc.GivenName}) has arrived! / telah tiba di dunia!");
+                        }
+                    }
+
+                    // Boss Spawn
+                    if (npc.boss || BossContributionTracker.IsBossDefeatNpc(npc))
+                    {
+                        if (_announcedBossIndices.Add(i))
+                        {
+                            BroadcastServerMessage($"[SERVER] Boss **{npc.FullName}** has awoken! / telah bangkit!");
+                        }
+                    }
+                }
+
+                if (_announcedBossIndices.Count > 64)
+                {
+                    _announcedBossIndices.Clear();
+                }
+                if (_announcedTownNpcIndices.Count > 128)
+                {
+                    _announcedTownNpcIndices.Clear();
+                }
+            }
+            catch { }
         }
 
         #region In-Game -> Discord Event Hooks
