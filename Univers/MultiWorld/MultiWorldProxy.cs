@@ -730,10 +730,12 @@ namespace Univers.MultiWorld
                         else session.ActiveOtherPlayers.Remove(mappedPid);
                     }
                 }
-                else if (msgId == 27 && packet.Length >= 25) // SyncProjectile ([3..4]=id, [5..12]=pos, [13..20]=vel, [21]=owner, [22..23]=type, [24]=flags)
+                // SyncProjectile layout Terraria 1.4.5: [3..4]=id, [5..12]=pos, [13..20]=vel, [21..22]=type, [23]=owner
+                // Owner HARUS di offset 23 (21..22 short type), atau projectile weapon player lain tak ter-remap & invisible.
+                else if (msgId == 27 && packet.Length >= 24)
                 {
                     short projId = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(3, 2));
-                    byte owner = MapBackendSlotToClient(session, packet[21]);
+                    byte owner = MapBackendSlotToClient(session, packet[23]);
                     session.ActiveProjectiles.Add((projId, owner));
                 }
                 else if (msgId == 29 && packet.Length >= 6) // KillProjectile
@@ -761,7 +763,7 @@ namespace Univers.MultiWorld
                 65 => (packet[3] & 3) != 1 ? 4 : -1, // Teleport: flag bits 0..1 == 1 adalah NPC teleport, bukan player
                 22 or 24 or 29 => 5,
                 91 => (packet.Length >= 10 && packet[7] == 2) ? 8 : -1, // SyncEmoteBubble anchor player
-                27 => 21, // SyncProjectile: owner byte ada di offset 21 pada Terraria 1.4.x/1.4.5
+                27 => 23, // SyncProjectile: owner byte ada di offset 23 (21..22 = type short) pada Terraria 1.4.5
                 _ => -1
             };
 
