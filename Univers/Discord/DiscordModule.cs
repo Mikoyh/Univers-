@@ -339,20 +339,7 @@ namespace Univers.Discord
 
             try
             {
-                // 1. World Save Status
-                bool saving = Terraria.IO.WorldFile.savingWorld;
-                if (saving && !_lastSavingWorldState)
-                {
-                    _lastSavingWorldState = true;
-                    BroadcastServerMessage("[SERVER] Saving world data... / Menyimpan data world...");
-                }
-                else if (!saving && _lastSavingWorldState)
-                {
-                    _lastSavingWorldState = false;
-                    BroadcastServerMessage("[SERVER] World save completed. / Penyimpanan world selesai.");
-                }
-
-                // 2. Blood Moon State
+                // 1. Blood Moon State
                 if (Main.bloodMoon && !_lastBloodMoonState)
                 {
                     _lastBloodMoonState = true;

@@ -72,11 +72,6 @@ namespace Univers
             Instance = this;
             GeneralHooks.ReloadEvent += OnReload;
 
-            try
-            {
-                TShock.Config.Settings.DisableUserJoinLeaveMessages = true;
-            }
-            catch { }
 
             string savePath = GetEffectiveSavePath();
             Directory.CreateDirectory(Path.Combine(savePath, "Skynomi"));
