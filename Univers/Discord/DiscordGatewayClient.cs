@@ -178,7 +178,25 @@ namespace Univers.Discord
                                 totalChars += nextLen;
                             }
 
-                            await SendEmbedsAsync(targetChannel, embeds, suppressMentions: true, ct);
+                            string? sentEmbedId = await SendEmbedsAsync(targetChannel, embeds, suppressMentions: true, ct);
+
+                            // Fallback: embed ditolak (mis. 403 Missing "Embed Links") -> kirim sebagai teks biasa.
+                            if (string.IsNullOrWhiteSpace(sentEmbedId))
+                            {
+                                var plain = new StringBuilder();
+                                foreach (var em in embeds)
+                                {
+                                    string? desc = em["description"]?.ToString();
+                                    string? title = em["title"]?.ToString();
+                                    if (!string.IsNullOrWhiteSpace(title)) plain.Append("**").Append(title).Append("** ");
+                                    if (!string.IsNullOrWhiteSpace(desc)) plain.Append(desc).Append('\n');
+                                }
+                                string plainText = plain.ToString().TrimEnd();
+                                if (!string.IsNullOrWhiteSpace(plainText))
+                                {
+                                    await SendMessageAsync(targetChannel, plainText, suppressMentions: true, ct);
+                                }
+                            }
                             await Task.Delay(350, ct);
                         }
                         else
@@ -702,8 +720,18 @@ namespace Univers.Discord
                     var jo = JObject.Parse(await resp.Content.ReadAsStringAsync(ct));
                     return jo["id"]?.ToString();
                 }
+
+                // Log kegagalan supaya "diam total" tidak lagi misterius (403/404/400 dst).
+                string errDetail;
+                try { errDetail = await resp.Content.ReadAsStringAsync(ct); } catch { errDetail = ""; }
+                if (errDetail.Length > 400) errDetail = errDetail.Substring(0, 400);
+                TShock.Log.ConsoleWarn($"[Univers.Discord] Kirim pesan gagal ({(int)resp.StatusCode} {resp.StatusCode}) channel={channelId}: {errDetail}");
             }
-            catch { }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.Discord] Kirim pesan exception channel={channelId}: {ex.GetType().Name}: {ex.Message}");
+            }
 
             return null;
         }

@@ -163,6 +163,12 @@ namespace Univers.Discord
             ServerApi.Hooks.GameUpdate.Register(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.NpcKilled.Register(UniversPlugin.Instance, OnNpcKilled);
 
+            // Set _initialized SEBELUM start gateway: onReady bisa jalan cepat di thread lain,
+            // dan BroadcastServerMessage() menolak kirim jika _initialized masih false
+            // (penyebab "server started" & relay in-game tidak pernah sampai ke Discord).
+            DiscordCommands.Register();
+            _initialized = true;
+
             if (!MultiWorldModule.IsChildProcess)
             {
                 Database = new DiscordDatabase(Path.Combine(masterUniversDir, "univers_discord.db"));
@@ -172,9 +178,6 @@ namespace Univers.Discord
             {
                 TShock.Log.ConsoleInfo("[Univers.Discord] Child World mode aktif: /verify & event relay tersambung ke Master Hub via IPC.");
             }
-
-            DiscordCommands.Register();
-            _initialized = true;
         }
 
         public static void Reload()
