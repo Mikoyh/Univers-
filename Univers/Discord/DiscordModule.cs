@@ -101,7 +101,7 @@ namespace Univers.Discord
             }
             else
             {
-                EnqueueRelayPost(MultiWorldModule.CurrentWorldId, stripped);
+                EnqueueRelayPost(MultiWorldModule.CurrentWorldId, stripped, useEmbed: true);
             }
         }
 
@@ -744,7 +744,7 @@ namespace Univers.Discord
 
             if (!string.IsNullOrEmpty(line))
             {
-                EnqueueRelayPost(worldId, line);
+                EnqueueRelayPost(worldId, line, useEmbed: true);
             }
         }
 
@@ -781,7 +781,7 @@ namespace Univers.Discord
             }
             else
             {
-                EnqueueRelayPost(MultiWorldModule.CurrentWorldId, msg);
+                EnqueueRelayPost(MultiWorldModule.CurrentWorldId, msg, useEmbed: true);
             }
         }
 
@@ -1785,12 +1785,14 @@ namespace Univers.Discord
             return "Mortal";
         }
 
-        private static void EnqueueRelayPost(string? worldId, string description)
+        // useEmbed: true = kirim sebagai Embed (event penting: join/leave, boss, event dunia).
+        // false = teks biasa (chat in-game). Fallback teks otomatis ada di OutboundPumpLoop kalau embed ditolak.
+        private static void EnqueueRelayPost(string? worldId, string description, bool useEmbed = false)
         {
             if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
             if (string.IsNullOrWhiteSpace(description)) return;
 
-            if (Config.UseEmbedsForRelay)
+            if (useEmbed)
             {
                 var embed = BuildRelayEmbed(worldId, description);
                 _gateway.EnqueueRelayEmbed(Config.RelayChannelId, embed);
