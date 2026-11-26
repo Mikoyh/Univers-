@@ -113,7 +113,7 @@ namespace Univers.Discord
                         player.SendInfoMessage("[ INFO ] Jalankan '/discord emojis' dari world Master Hub (lobby) atau gunakan /mwexec lobby discord emojis.");
                         return;
                     }
-                    if (args.Parameters.Count >= 2 && args[1].Equals("refresh", StringComparison.OrdinalIgnoreCase))
+                    if (args.Parameters.Count >= 2 && args.Parameters[1].Equals("refresh", StringComparison.OrdinalIgnoreCase))
                     {
                         DiscordModule.RefreshGuildMetadataAsync();
                         player.SendInfoMessage("[ DISCORD ] Memuat ulang custom emoji & warna role dari server Discord...");
