@@ -62,6 +62,7 @@ namespace Univers.Discord
         public string ChannelId { get; set; } = string.Empty;
         public string Content { get; set; } = string.Empty;
         public JObject? Embed { get; set; }
+        public string? MentionRoleId { get; set; }
     }
 
     public sealed class DiscordGatewayClient : IDisposable
@@ -131,7 +132,7 @@ namespace Univers.Discord
             });
         }
 
-        public void EnqueueRelayEmbed(string channelId, JObject embed)
+        public void EnqueueRelayEmbed(string channelId, JObject embed, string? mentionRoleId = null)
         {
             if (string.IsNullOrWhiteSpace(channelId) || embed == null || _cts.IsCancellationRequested)
             {
@@ -146,7 +147,8 @@ namespace Univers.Discord
             _outboundQueue.Enqueue(new OutboundDiscordPost
             {
                 ChannelId = channelId,
-                Embed = embed
+                Embed = embed,
+                MentionRoleId = string.IsNullOrWhiteSpace(mentionRoleId) ? null : mentionRoleId
             });
         }
 
@@ -178,7 +180,9 @@ namespace Univers.Discord
                                 totalChars += nextLen;
                             }
 
-                            string? sentEmbedId = await SendEmbedsAsync(targetChannel, embeds, suppressMentions: true, ct);
+                            string? mentionRole = first.MentionRoleId;
+                            bool suppress = string.IsNullOrWhiteSpace(mentionRole);
+                            string? sentEmbedId = await SendEmbedsAsync(targetChannel, embeds, suppressMentions: suppress, ct, mentionRole);
 
                             // Fallback: embed ditolak (mis. 403 Missing "Embed Links") -> kirim sebagai teks biasa.
                             if (string.IsNullOrWhiteSpace(sentEmbedId))
@@ -194,7 +198,7 @@ namespace Univers.Discord
                                 string plainText = plain.ToString().TrimEnd();
                                 if (!string.IsNullOrWhiteSpace(plainText))
                                 {
-                                    await SendMessageAsync(targetChannel, plainText, suppressMentions: true, ct);
+                                    await SendMessageAsync(targetChannel, plainText, suppressMentions: suppress, ct, mentionRole);
                                 }
                             }
                             await Task.Delay(350, ct);
@@ -640,7 +644,7 @@ namespace Univers.Discord
 
         #region Discord REST Helpers
 
-        public async Task<string?> SendMessageAsync(string channelId, string content, bool suppressMentions = true, CancellationToken ct = default)
+        public async Task<string?> SendMessageAsync(string channelId, string content, bool suppressMentions = true, CancellationToken ct = default, string? mentionRoleId = null)
         {
             if (string.IsNullOrWhiteSpace(channelId) || string.IsNullOrWhiteSpace(content)) return null;
 
@@ -650,7 +654,15 @@ namespace Univers.Discord
                 ["content"] = safeText
             };
 
-            if (suppressMentions)
+            if (!string.IsNullOrWhiteSpace(mentionRoleId))
+            {
+                body["allowed_mentions"] = new JObject
+                {
+                    ["parse"] = new JArray(),
+                    ["roles"] = new JArray(mentionRoleId)
+                };
+            }
+            else if (suppressMentions)
             {
                 body["allowed_mentions"] = new JObject
                 {
@@ -667,7 +679,7 @@ namespace Univers.Discord
             return SendEmbedsAsync(channelId, new[] { embed }, suppressMentions, ct);
         }
 
-        public async Task<string?> SendEmbedsAsync(string channelId, IReadOnlyList<JObject> embeds, bool suppressMentions = true, CancellationToken ct = default)
+        public async Task<string?> SendEmbedsAsync(string channelId, IReadOnlyList<JObject> embeds, bool suppressMentions = true, CancellationToken ct = default, string? mentionRoleId = null)
         {
             if (string.IsNullOrWhiteSpace(channelId) || embeds == null || embeds.Count == 0) return null;
 
@@ -684,7 +696,15 @@ namespace Univers.Discord
                 ["embeds"] = arr
             };
 
-            if (suppressMentions)
+            if (!string.IsNullOrWhiteSpace(mentionRoleId))
+            {
+                body["allowed_mentions"] = new JObject
+                {
+                    ["parse"] = new JArray(),
+                    ["roles"] = new JArray(mentionRoleId)
+                };
+            }
+            else if (suppressMentions)
             {
                 body["allowed_mentions"] = new JObject
                 {

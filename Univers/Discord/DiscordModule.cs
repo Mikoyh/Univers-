@@ -739,13 +739,26 @@ namespace Univers.Discord
             {
                 "server_join" => $"**[+]** `{safeName}` bergabung ke server.",
                 "server_leave" => $"**[-]** `{safeName}` keluar dari server.",
+                "world_switch" => $"**[~]** `{safeName}` pindah ke world **{GetWorldDisplayName(worldId)}**.",
                 _ => string.Empty
             };
 
             if (!string.IsNullOrEmpty(line))
             {
-                EnqueueRelayPost(worldId, line, useEmbed: true);
+                EnqueueRelayPost(worldId, line, useEmbed: true, mentionWorldRole: eventKind == "world_switch");
             }
+        }
+
+        private static string GetWorldDisplayName(string? worldId)
+        {
+            if (string.IsNullOrWhiteSpace(worldId)) return "lobby";
+            try
+            {
+                var def = MultiWorldModule.Config?.GetWorld(worldId);
+                if (def != null && !string.IsNullOrWhiteSpace(def.DisplayName)) return def.DisplayName;
+            }
+            catch { }
+            return worldId;
         }
 
         public static void NotifyExternalEventFromChild(string worldId, string message)
@@ -1616,12 +1629,20 @@ namespace Univers.Discord
             {
                 var allWorldRoles = new HashSet<string>(Config.WorldRoleIds.Values);
                 string? want = Config.WorldRoleIds.TryGetValue(worldId, out var wr) ? wr : null;
+                if (string.IsNullOrWhiteSpace(want))
+                {
+                    TShock.Log.ConsoleWarn($"[Univers.Discord] World role '{worldId}' belum terpetakan (WorldRoleIds kosong utk key ini) — sync world role DILEWATI. Jalankan '/discord roles refresh'.");
+                }
                 foreach (var rid in allWorldRoles)
                 {
                     if (string.IsNullOrWhiteSpace(rid)) continue;
                     if (rid == want)
                     {
-                        if (!curSet.Contains(rid)) { if (await _gateway.AddGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Add(rid); }
+                        if (!curSet.Contains(rid))
+                        {
+                            if (await _gateway.AddGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Add(rid);
+                            else TShock.Log.ConsoleWarn($"[Univers.Discord] Gagal add world role {rid} ke user {discordUserId}. Cek permission 'Manage Roles' + posisi role bot harus di atas role world.");
+                        }
                     }
                     else if (curSet.Contains(rid))
                     {
@@ -1629,6 +1650,37 @@ namespace Univers.Discord
                     }
                 }
             }
+        }
+
+        // Dipanggil saat player pindah world -> sync world role segera (tak perlu tunggu polling).
+        public static void RequestImmediateRoleSync(string accountName, string worldId)
+        {
+            if (MultiWorldModule.IsChildProcess) return;
+            if (_gateway == null || !_gateway.IsConnected) return;
+            if (!Config.SyncWorldRoles && !Config.SyncRankRoles && !Config.SyncElementRoles) return;
+            if (Database == null || string.IsNullOrWhiteSpace(accountName) || string.IsNullOrWhiteSpace(worldId)) return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var link = Database.GetByAccount(accountName);
+                    if (link == null)
+                    {
+                        // Nama player != nama akun TShock: coba resolve lewat player lokal.
+                        var local = TShock.Players.FirstOrDefault(p =>
+                            p != null && p.Active && p.IsLoggedIn && p.Account != null &&
+                            p.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase));
+                        if (local?.Account != null) link = Database.GetByAccount(local.Account.Name);
+                    }
+                    if (link == null || !link.IsVerified) return;
+                    await SyncRolesForAccountAsync(Config.GuildId, link.DiscordUserId, link.AccountName, worldId);
+                }
+                catch (Exception ex)
+                {
+                    TShock.Log.ConsoleWarn($"[Univers.Discord] Immediate world-role sync gagal ({accountName} -> {worldId}): {ex.Message}");
+                }
+            });
         }
 
         // Polling: sinkronkan semua player online (Lintas World: Lobby + Survival) yg sudah verify.
@@ -1787,15 +1839,24 @@ namespace Univers.Discord
 
         // useEmbed: true = kirim sebagai Embed (event penting: join/leave, boss, event dunia).
         // false = teks biasa (chat in-game). Fallback teks otomatis ada di OutboundPumpLoop kalau embed ditolak.
-        private static void EnqueueRelayPost(string? worldId, string description, bool useEmbed = false)
+        private static void EnqueueRelayPost(string? worldId, string description, bool useEmbed = false, bool mentionWorldRole = false)
         {
             if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
             if (string.IsNullOrWhiteSpace(description)) return;
 
             if (useEmbed)
             {
+                string? mentionRoleId = null;
+                if (mentionWorldRole && !string.IsNullOrWhiteSpace(worldId) &&
+                    Config.WorldRoleIds.TryGetValue(worldId, out var widRole) &&
+                    !string.IsNullOrWhiteSpace(widRole))
+                {
+                    mentionRoleId = widRole;
+                    // Prepend mention agar Discord benar-benar me-mention role (bukan cuma teks).
+                    description = $"<@&{widRole}> {description}";
+                }
                 var embed = BuildRelayEmbed(worldId, description);
-                _gateway.EnqueueRelayEmbed(Config.RelayChannelId, embed);
+                _gateway.EnqueueRelayEmbed(Config.RelayChannelId, embed, mentionRoleId);
             }
             else
             {

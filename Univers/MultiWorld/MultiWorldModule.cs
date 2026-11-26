@@ -956,6 +956,10 @@ namespace Univers.MultiWorld
                 string msg = $"[MultiWorld] {playerName} pindah ke {display} ({badge}).";
                 BroadcastLocalFormatted(msg, Color.LightSlateGray);
                 await PushMessageToOtherChildrenAsync(null, "push_notice", msg, 148, 163, 184);
+
+                // Relay perpindahan world ke Discord (mention role world) + sync role world segera.
+                DiscordModule.NotifyPresenceEvent("world_switch", worldId, playerName);
+                DiscordModule.RequestImmediateRoleSync(playerName, worldId);
             }
         }
 
