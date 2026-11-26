@@ -57,6 +57,7 @@ namespace Univers.Discord
         // Role cukup dibuat sekali; setelah itu lu bebas rename / pindah posisi role — ID tetap sama.
         public bool SyncRankRoles { get; set; } = false;
         public bool SyncElementRoles { get; set; } = false;
+        public bool SyncWorldRoles { get; set; } = false;
 
         // Interval polling sinkronisasi real-time (detik). 0 = matikan polling (sync hanya saat verify).
         public int RoleSyncPollSeconds { get; set; } = 60;
@@ -67,15 +68,33 @@ namespace Univers.Discord
         // Peta ElementId (VOLT/IGNIS/...) -> RoleId Discord (dikelola otomatis oleh bot).
         public Dictionary<string, string> ElementRoleIds { get; set; } = new();
 
+        // Peta WorldId (lobby/survival) -> RoleId Discord (otomatis mendeteksi role bernama Lobby/Survival).
+        public Dictionary<string, string> WorldRoleIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+        // Warna default Embed Discord per World (Hex RGB) jika role Discord belum punya warna khusus.
+        public Dictionary<string, string> WorldEmbedColors { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["lobby"] = "38bdf8",
+            ["survival"] = "22c55e"
+        };
+
+        // Peta override emoji custom Discord (Key: ItemID atau nama item, Value: <:nama:id>).
+        // Jika kosong, bot otomatis mengambil & mencocokkan custom emoji dari server Discord.
+        public Dictionary<string, string> CustomEmojiMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
         // Sinkronisasi Nickname Discord setelah verifikasi (opsional)
         public bool SyncNicknameWithTShockName { get; set; } = false;
         public string NicknameFormat { get; set; } = "{AccountName}";
 
         // Pengaturan Relay Chat & Event
+        public bool UseEmbedsForRelay { get; set; } = true;
+        public bool UseLevelSwordEmojisInRelay { get; set; } = true;
         public bool RelayInGameChatToDiscord { get; set; } = true;
         public bool RelayDiscordChatToInGame { get; set; } = true;
         public bool RelayJoinLeaveToDiscord { get; set; } = true;
         public bool RelayBossDefeatsToDiscord { get; set; } = true;
+        public bool RelayTownNpcArrivals { get; set; } = true;
+        public bool RelayLobbyTownNpcArrivals { get; set; } = false;
         public bool SanitizeTerrariaTagsFromDiscord { get; set; } = true;
 
         // Keamanan & Rate-Limit
@@ -104,8 +123,13 @@ namespace Univers.Discord
                         cfg.AdminRoleIds ??= new List<string>();
                         cfg.ProtectUserIds ??= new List<string>();
                         cfg.ProtectRoleIds ??= new List<string>();
-                        cfg.RankRoleIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        cfg.ElementRoleIds ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        cfg.RankRoleIds = new Dictionary<string, string>(cfg.RankRoleIds ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+                        cfg.ElementRoleIds = new Dictionary<string, string>(cfg.ElementRoleIds ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+                        cfg.WorldRoleIds = new Dictionary<string, string>(cfg.WorldRoleIds ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+                        cfg.WorldEmbedColors = new Dictionary<string, string>(cfg.WorldEmbedColors ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+                        if (!cfg.WorldEmbedColors.ContainsKey("lobby")) cfg.WorldEmbedColors["lobby"] = "38bdf8";
+                        if (!cfg.WorldEmbedColors.ContainsKey("survival")) cfg.WorldEmbedColors["survival"] = "22c55e";
+                        cfg.CustomEmojiMap = new Dictionary<string, string>(cfg.CustomEmojiMap ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
                         if (cfg.RoleSyncPollSeconds < 0) cfg.RoleSyncPollSeconds = 0;
                         if (cfg.VerifyCodeExpiryMinutes < 1) cfg.VerifyCodeExpiryMinutes = 5;
                         if (cfg.DiscordChatCooldownSeconds < 0) cfg.DiscordChatCooldownSeconds = 2;

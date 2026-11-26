@@ -104,6 +104,24 @@ namespace Univers.Discord
                     player.SendSuccessMessage("[ OK ] Konfigurasi DiscordConfig.json dimuat ulang & Gateway disegarkan.");
                     return;
 
+                case "emojis":
+                case "emoji":
+                case "roles":
+                    if (!RequireAdmin(player)) return;
+                    if (MultiWorldModule.IsChildProcess)
+                    {
+                        player.SendInfoMessage("[ INFO ] Jalankan '/discord emojis' dari world Master Hub (lobby) atau gunakan /mwexec lobby discord emojis.");
+                        return;
+                    }
+                    if (args.Parameters.Count >= 2 && args[1].Equals("refresh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        DiscordModule.RefreshGuildMetadataAsync();
+                        player.SendInfoMessage("[ DISCORD ] Memuat ulang custom emoji & warna role dari server Discord...");
+                        return;
+                    }
+                    player.SendInfoMessage(DiscordModule.GetCachedEmojiAndRoleSummary());
+                    return;
+
                 case "whois":
                 case "check":
                     if (!RequireAdmin(player)) return;
@@ -208,7 +226,7 @@ namespace Univers.Discord
             player.SendInfoMessage("/discord unlink               - Putuskan tautan akun Discord kamu");
             if (player.HasPermission("univers.discord.admin"))
             {
-                player.SendMessage("[ ADMIN ] /discord check <akun|id> | /discord forceunlink <akun> | /discord reload", Color.Yellow);
+                player.SendMessage("[ ADMIN ] /discord check <akun|id> | /discord forceunlink <akun> | /discord emojis [refresh] | /discord reload", Color.Yellow);
             }
         }
 

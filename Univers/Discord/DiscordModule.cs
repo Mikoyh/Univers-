@@ -16,14 +16,17 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
+using Newtonsoft.Json.Linq;
 using Skynomi.Ranks;
 using Terraria;
+using Terraria.ID;
 using TerrariaApi.Server;
 using TShockAPI;
 using Univers.Exp;
@@ -65,29 +68,40 @@ namespace Univers.Discord
         private static readonly ConcurrentDictionary<string, DateTime> _lastUnverifiedWarnUtc = new();
         private static readonly ConcurrentDictionary<string, DateTime> _lastDiscordChatUtc = new();
         private static DateTime _lastRoleSyncUtc = DateTime.MinValue;
+        private static DateTime _lastGuildMetaSyncUtc = DateTime.MinValue;
 
         private static bool _lastBloodMoonState;
         private static bool _lastEclipseState;
         private static int _lastInvasionType;
         private static DateTime _lastWorldEventScanUtc = DateTime.MinValue;
+        private static DateTime _moduleInitUtc = DateTime.UtcNow;
+        private static DateTime _lastGatewayReadyUtc = DateTime.MinValue;
+        private static DateTime _firstPlayerJoinGraceUntilUtc = DateTime.MinValue;
+        private static int _lastObservedActivePlayerCount;
+        private static bool _worldEventBaselineSeeded;
+
         // Pastikan broadcast "server started" & purge #verify hanya terjadi SEKALI per proses.
-        // Tanpa flag ini, setiap reconnect Gateway (yang kirim READY lagi) akan spam channel.
         private static bool _startupAnnounced;
-        private static readonly HashSet<int> _announcedTownNpcIndices = new();
-        private static readonly HashSet<int> _announcedBossIndices = new();
+        private static readonly Dictionary<int, string> _activeTownNpcSlots = new();
+        private static readonly Dictionary<string, DateTime> _recentTownNpcAnnouncements = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<int> _activeBossSlots = new();
+        private static readonly Dictionary<string, DateTime> _recentBossAwokenAnnouncements = new(StringComparer.OrdinalIgnoreCase);
 
         public static void BroadcastServerMessage(string message)
         {
             if (!_initialized || !Config.Enabled) return;
             if (string.IsNullOrWhiteSpace(message)) return;
 
+            string stripped = StripWorldAndServerTags(message);
+            if (string.IsNullOrWhiteSpace(stripped)) return;
+
             if (MultiWorldModule.IsChildProcess)
             {
-                _ = MultiWorldModule.SendChildEventToDiscordAsync(MultiWorldModule.CurrentWorldId, message);
+                _ = MultiWorldModule.SendChildEventToDiscordAsync(MultiWorldModule.CurrentWorldId, stripped);
             }
-            else if (_gateway != null && _gateway.IsConnected && !string.IsNullOrWhiteSpace(Config.RelayChannelId))
+            else
             {
-                _gateway.EnqueueRelayMessage(Config.RelayChannelId, message);
+                EnqueueRelayPost(MultiWorldModule.CurrentWorldId, stripped);
             }
         }
 
@@ -103,8 +117,23 @@ namespace Univers.Discord
             ("OMNIA", "Omnia", "ef4444"),
         };
 
-        // Cache nama role (Id -> Name) untuk menampilkan nama role admin di ingame.
+        // Cache nama role (Id -> Name), warna role world (worldId -> 24-bit RGB int), & custom emoji guild.
         private static readonly ConcurrentDictionary<string, string> _guildRoleNames = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, int> _worldRoleColors = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _guildEmojisByNormName = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, string> _guildEmojisExactName = new(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly Dictionary<int, string[]> SwordBadgeAliases = new()
+        {
+            [ItemID.CopperShortsword] = new[] { "coppershortsword", "copperbroadsword", "coppersword", "copper", "lv1", "tier1", "badge1" },
+            [ItemID.CopperBroadsword] = new[] { "copperbroadsword", "coppershortsword", "coppersword", "copper" },
+            [ItemID.NightsEdge] = new[] { "nightsedge", "nightedge", "darkblade", "lv100", "tier2", "badge2" },
+            [ItemID.TerraBlade] = new[] { "terrablade", "terrasword", "terra", "lv250", "tier3", "badge3" },
+            [ItemID.FragmentSolar] = new[] { "solareruption", "solarfragment", "fragmentsolar", "solar", "lv500", "tier4", "badge4" },
+            [ItemID.SolarEruption] = new[] { "solareruption", "solarfragment", "solar" },
+            [ItemID.Meowmere] = new[] { "meowmere", "meowmare", "meow", "lv750", "tier5", "badge5" },
+            [ItemID.Zenith] = new[] { "zenith", "zenithapex", "apex", "lv950", "tier6", "badge6" },
+        };
 
         private const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -114,6 +143,15 @@ namespace Univers.Discord
         public static void Initialize(string savePath)
         {
             if (_initialized) return;
+
+            _moduleInitUtc = DateTime.UtcNow;
+            _worldEventBaselineSeeded = false;
+            _lastObservedActivePlayerCount = 0;
+            _firstPlayerJoinGraceUntilUtc = DateTime.MinValue;
+            _activeTownNpcSlots.Clear();
+            _recentTownNpcAnnouncements.Clear();
+            _activeBossSlots.Clear();
+            _recentBossAwokenAnnouncements.Clear();
 
             string localUniversDir = Path.Combine(savePath, "Univers");
             string masterUniversDir = ResolveMasterUniversDir(localUniversDir);
@@ -153,6 +191,12 @@ namespace Univers.Discord
             TShock.Log.ConsoleInfo("[Univers.Discord] Konfigurasi DiscordConfig.json dimuat ulang.");
         }
 
+        public static void RefreshGuildMetadataAsync()
+        {
+            if (_gateway == null || !_gateway.IsConnected) return;
+            _ = CacheGuildMetadataAndEnsureRolesAsync();
+        }
+
         public static void EnqueueMainThread(Action action)
         {
             if (action == null || !_initialized) return;
@@ -168,10 +212,16 @@ namespace Univers.Discord
             {
                 try
                 {
-                    _gateway.SendMessageAsync(
-                        Config.RelayChannelId,
-                        "**[SERVER] Server shutdown. Portal ke dunia univers sedang tertutup.**\n*(Server shutdown. Portal to the Univers world is now closed.)*",
-                        suppressMentions: true).GetAwaiter().GetResult();
+                    string shutdownText = "**Server shutdown.** Portal ke dunia Univers sedang tertutup.\n*(Server shutdown. Portal to the Univers world is now closed.)*";
+                    if (Config.UseEmbedsForRelay)
+                    {
+                        var embed = BuildRelayEmbed(MultiWorldModule.CurrentWorldId, shutdownText);
+                        _gateway.SendEmbedAsync(Config.RelayChannelId, embed, suppressMentions: true).GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        _gateway.SendMessageAsync(Config.RelayChannelId, shutdownText, suppressMentions: true).GetAwaiter().GetResult();
+                    }
                 }
                 catch { }
             }
@@ -186,6 +236,14 @@ namespace Univers.Discord
             _pendingDiscordRequests.Clear();
             _lastUnverifiedWarnUtc.Clear();
             _lastDiscordChatUtc.Clear();
+            _activeTownNpcSlots.Clear();
+            _recentTownNpcAnnouncements.Clear();
+            _activeBossSlots.Clear();
+            _recentBossAwokenAnnouncements.Clear();
+            _guildRoleNames.Clear();
+            _worldRoleColors.Clear();
+            _guildEmojisByNormName.Clear();
+            _guildEmojisExactName.Clear();
             while (_mainThreadQueue.TryDequeue(out _)) { }
 
             Database?.Dispose();
@@ -213,22 +271,27 @@ namespace Univers.Discord
                 msg => _ = Task.Run(() => HandleIncomingDiscordMessageAsync(msg)),
                 botName =>
                 {
+                    _lastGatewayReadyUtc = DateTime.UtcNow;
                     TShock.Log.ConsoleInfo($"[Univers.Discord] Bot '@{botName}' terhubung ke Discord! Relay={(string.IsNullOrWhiteSpace(Config.RelayChannelId) ? "UNSET" : Config.RelayChannelId)} | AuthGate={(Config.RequireVerifiedAccountToChat ? "STRICT" : "OPEN")}");
 
-                    // onReady juga terpicu pada resume-reconnect. Hanya kirim notifikasi startup & purge
-                    // #verify sekali per proses, jangan tiap reconnect (penyebab spam "Portal terbuka").
-                    bool firstReadyThisProcess = !_startupAnnounced;
-                    _startupAnnounced = true;
-                    if (firstReadyThisProcess)
+                    _ = Task.Run(async () =>
                     {
-                        if (!string.IsNullOrWhiteSpace(Config.RelayChannelId))
+                        // Ambil role colors & custom guild emojis dulu sebelum kirim startup embed
+                        await CacheGuildMetadataAndEnsureRolesAsync();
+
+                        // onReady juga terpicu pada resume-reconnect. Hanya kirim notifikasi startup & purge
+                        // #verify sekali per proses, jangan tiap reconnect (penyebab spam "Portal terbuka").
+                        bool firstReadyThisProcess = !_startupAnnounced;
+                        _startupAnnounced = true;
+                        if (firstReadyThisProcess)
                         {
-                            BroadcastServerMessage("**[SERVER] Server has started! Portal ke dunia Univers telah terbuka.**\n*(Server has started! Portal to the Univers world is now open.)*");
+                            if (!string.IsNullOrWhiteSpace(Config.RelayChannelId))
+                            {
+                                BroadcastServerMessage("**Server has started!** Portal ke dunia Univers telah terbuka.\n*(Server has started! Portal to the Univers world is now open.)*");
+                            }
+                            await PurgeVerifyChannelIfEnabledAsync();
                         }
-                        _ = PurgeVerifyChannelIfEnabledAsync();
-                    }
-                    _ = EnsureRoleMapsAsync();
-                    _ = CacheRoleNamesAsync();
+                    });
                 });
 
             _gateway.Start();
@@ -248,18 +311,114 @@ namespace Univers.Discord
             StartGatewayIfConfigured();
         }
 
-        // Simpan peta Id->Name role guild utk tampilkan nama role admin di ingame.
-        private static async Task CacheRoleNamesAsync()
+        private static async Task CacheGuildMetadataAndEnsureRolesAsync()
+        {
+            await CacheGuildRolesAndEmojisAsync();
+            await EnsureRoleMapsAsync();
+        }
+
+        // Ambil peta Role (Id, Name, Color -> WorldRoleIds & warna Embed) + seluruh Custom Emoji server Discord.
+        private static async Task CacheGuildRolesAndEmojisAsync()
         {
             if (_gateway == null || string.IsNullOrWhiteSpace(Config.GuildId)) return;
+            _lastGuildMetaSyncUtc = DateTime.UtcNow;
+
             try
             {
-                foreach (var r in await _gateway.GetGuildRolesAsync(Config.GuildId))
+                var roles = await _gateway.GetGuildRolesDetailedAsync(Config.GuildId);
+                var rolesById = new Dictionary<string, DiscordGuildRole>(StringComparer.OrdinalIgnoreCase);
+                var rolesByName = new Dictionary<string, DiscordGuildRole>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var r in roles)
                 {
                     _guildRoleNames[r.Id] = r.Name;
+                    rolesById[r.Id] = r;
+                    if (!string.IsNullOrWhiteSpace(r.Name))
+                    {
+                        rolesByName[r.Name.Trim()] = r;
+                    }
                 }
+
+                bool cfgChanged = false;
+                var candidateWorldIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "lobby", "survival" };
+                try
+                {
+                    foreach (var w in MultiWorldModule.Config.Worlds)
+                    {
+                        if (!string.IsNullOrWhiteSpace(w.Id)) candidateWorldIds.Add(w.Id);
+                    }
+                }
+                catch { }
+
+                foreach (string wid in candidateWorldIds)
+                {
+                    DiscordGuildRole? matched = null;
+
+                    if (Config.WorldRoleIds.TryGetValue(wid, out var configuredRoleId) &&
+                        !string.IsNullOrWhiteSpace(configuredRoleId) &&
+                        rolesById.TryGetValue(configuredRoleId, out var byIdRole))
+                    {
+                        matched = byIdRole;
+                    }
+                    else
+                    {
+                        var worldDef = MultiWorldModule.Config?.GetWorld(wid);
+                        string[] candidates =
+                        {
+                            wid,
+                            worldDef?.DisplayName ?? string.Empty,
+                            worldDef?.ChatTag ?? string.Empty
+                        };
+
+                        foreach (string cand in candidates)
+                        {
+                            if (!string.IsNullOrWhiteSpace(cand) && rolesByName.TryGetValue(cand.Trim(), out var found))
+                            {
+                                matched = found;
+                                break;
+                            }
+                        }
+
+                        if (matched != null)
+                        {
+                            Config.WorldRoleIds[wid] = matched.Id;
+                            cfgChanged = true;
+                        }
+                    }
+
+                    if (matched != null && matched.Color > 0)
+                    {
+                        _worldRoleColors[wid] = matched.Color;
+                    }
+                }
+
+                if (cfgChanged && !string.IsNullOrEmpty(_configPath))
+                {
+                    Config.Save(_configPath);
+                }
+
+                var emojis = await _gateway.GetGuildEmojisAsync(Config.GuildId);
+                _guildEmojisByNormName.Clear();
+                _guildEmojisExactName.Clear();
+                foreach (var e in emojis)
+                {
+                    string tag = e.FormatTag();
+                    if (string.IsNullOrEmpty(tag)) continue;
+
+                    _guildEmojisExactName[e.Name] = tag;
+                    string norm = NormalizeEmojiKey(e.Name);
+                    if (!string.IsNullOrEmpty(norm) && !_guildEmojisByNormName.ContainsKey(norm))
+                    {
+                        _guildEmojisByNormName[norm] = tag;
+                    }
+                }
+
+                TShock.Log.ConsoleInfo($"[Univers.Discord] Metadata Discord dimuat: {roles.Count} role, {emojis.Count} custom emoji.");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                TShock.Log.ConsoleWarn($"[Univers.Discord] Gagal memuat role/emoji Discord: {ex.Message}");
+            }
         }
 
         // Ambil nama role admin pertama yang dimiliki msg (berdasarkan AdminRoleIds).
@@ -325,74 +484,187 @@ namespace Univers.Discord
                 try { act(); } catch { }
             }
 
-            // Real-time role sync ke Discord (polling berkala).
-            if (Config.RoleSyncPollSeconds > 0 && (Config.SyncRankRoles || Config.SyncElementRoles))
+            // Real-time role sync & refresh role color/emoji ke Discord (polling berkala).
+            if (!MultiWorldModule.IsChildProcess && _gateway != null && _gateway.IsConnected)
             {
-                if ((DateTime.UtcNow - _lastRoleSyncUtc).TotalSeconds >= Config.RoleSyncPollSeconds)
+                int pollSec = Config.RoleSyncPollSeconds > 0 ? Config.RoleSyncPollSeconds : 120;
+                if ((DateTime.UtcNow - _lastRoleSyncUtc).TotalSeconds >= pollSec)
                 {
                     _lastRoleSyncUtc = DateTime.UtcNow;
-                    _ = Task.Run(SyncAllOnlineRolesAsync);
+                    _ = Task.Run(async () =>
+                    {
+                        if ((DateTime.UtcNow - _lastGuildMetaSyncUtc).TotalMinutes >= 2)
+                        {
+                            await CacheGuildRolesAndEmojisAsync();
+                        }
+                        if (Config.RoleSyncPollSeconds > 0 && (Config.SyncRankRoles || Config.SyncElementRoles || Config.SyncWorldRoles))
+                        {
+                            await SyncAllOnlineRolesAsync();
+                        }
+                    });
                 }
             }
 
-            // Pindai event dunia, save world, town NPC, dan boss spawn untuk relay ke Discord
-            if (!MultiWorldModule.IsChildProcess && (DateTime.UtcNow - _lastWorldEventScanUtc).TotalSeconds >= 2.5)
+            // Pindai event dunia, town NPC, dan boss spawn untuk relay ke Discord
+            if ((DateTime.UtcNow - _lastWorldEventScanUtc).TotalSeconds >= 2.5)
             {
                 _lastWorldEventScanUtc = DateTime.UtcNow;
                 ScanAndBroadcastWorldEvents();
             }
         }
 
+        private static bool IsLobbyWorld()
+        {
+            string wid = MultiWorldModule.CurrentWorldId ?? string.Empty;
+            return !MultiWorldModule.IsChildProcess || wid.Equals("lobby", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int CountActiveRealPlayers()
+        {
+            int count = 0;
+            try
+            {
+                foreach (var p in TShock.Players)
+                {
+                    if (p != null && p.Active && p.RealPlayer) count++;
+                }
+            }
+            catch { }
+            return count;
+        }
+
         private static void ScanAndBroadcastWorldEvents()
         {
-            if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
+            if (Main.npc == null) return;
 
             try
             {
+                int activePlayers = CountActiveRealPlayers();
+                if (_lastObservedActivePlayerCount == 0 && activePlayers > 0)
+                {
+                    // Ketika player pertama masuk dari kondisi idle/kosong, serap NPC yg baru respawn selama 12 detik tanpa spam
+                    _firstPlayerJoinGraceUntilUtc = DateTime.UtcNow.AddSeconds(12);
+                }
+                _lastObservedActivePlayerCount = activePlayers;
+
+                // Baseline pass pertama: rekam semua state, Town NPC, dan Boss yg sudah ada secara diam-diam!
+                if (!_worldEventBaselineSeeded)
+                {
+                    _lastBloodMoonState = Main.bloodMoon;
+                    _lastEclipseState = Main.eclipse;
+                    _lastInvasionType = Main.invasionType;
+
+                    for (int i = 0; i < Main.maxNPCs; i++)
+                    {
+                        var npc = Main.npc[i];
+                        if (npc == null || !npc.active) continue;
+
+                        if ((npc.townNPC || npc.isLikeATownNPC) && !string.IsNullOrEmpty(npc.GivenName))
+                        {
+                            string sig = $"{npc.type}:{npc.GivenName}";
+                            _activeTownNpcSlots[i] = sig;
+                            _recentTownNpcAnnouncements[sig] = DateTime.UtcNow;
+                        }
+
+                        if (npc.boss || BossContributionTracker.IsBossDefeatNpc(npc))
+                        {
+                            _activeBossSlots.Add(i);
+                            if (!string.IsNullOrWhiteSpace(npc.FullName))
+                            {
+                                _recentBossAwokenAnnouncements[npc.FullName] = DateTime.UtcNow;
+                            }
+                        }
+                    }
+
+                    _worldEventBaselineSeeded = true;
+                    return;
+                }
+
+                bool readyToBroadcast = Config.Enabled &&
+                    (DateTime.UtcNow - _moduleInitUtc).TotalSeconds >= 20 &&
+                    (MultiWorldModule.IsChildProcess ||
+                     (_gateway != null && _gateway.IsConnected && !string.IsNullOrWhiteSpace(Config.RelayChannelId) &&
+                      _lastGatewayReadyUtc != DateTime.MinValue && (DateTime.UtcNow - _lastGatewayReadyUtc).TotalSeconds >= 10));
+
                 // 1. Blood Moon State
                 if (Main.bloodMoon && !_lastBloodMoonState)
                 {
                     _lastBloodMoonState = true;
-                    BroadcastServerMessage("[SERVER] A Blood Moon is rising... / Darah bulan mulai naik di malam hari!");
+                    if (readyToBroadcast)
+                    {
+                        BroadcastServerMessage("A Blood Moon is rising... / Darah bulan mulai naik di malam hari!");
+                    }
                 }
                 else if (!Main.bloodMoon && _lastBloodMoonState)
                 {
                     _lastBloodMoonState = false;
                 }
 
-                // 3. Solar Eclipse State
+                // 2. Solar Eclipse State
                 if (Main.eclipse && !_lastEclipseState)
                 {
                     _lastEclipseState = true;
-                    BroadcastServerMessage("[SERVER] A Solar Eclipse is happening! / Gerhana matahari terjadi!");
+                    if (readyToBroadcast)
+                    {
+                        BroadcastServerMessage("A Solar Eclipse is happening! / Gerhana matahari terjadi!");
+                    }
                 }
                 else if (!Main.eclipse && _lastEclipseState)
                 {
                     _lastEclipseState = false;
                 }
 
-                // 4. Invasions
+                // 3. Invasions
                 int inv = Main.invasionType;
                 if (inv > 0 && inv != _lastInvasionType)
                 {
                     _lastInvasionType = inv;
-                    string invName = inv switch
+                    if (readyToBroadcast)
                     {
-                        1 => "The Goblin Army is approaching from the east! (Pasukan Goblin mendekat)",
-                        2 => "The Frost Legion has arrived! (Legiun Es tiba)",
-                        3 => "Pirates are arriving from the sea! (Bajak laut menyerang)",
-                        4 => "Martian Madness has begun! (Kegilaan Martian dimulai)",
-                        _ => "An invasion has begun! (Invasi dimulai)"
-                    };
-                    BroadcastServerMessage($"[SERVER] {invName}");
+                        string invName = inv switch
+                        {
+                            1 => "The Goblin Army is approaching from the east! (Pasukan Goblin mendekat)",
+                            2 => "The Frost Legion has arrived! (Legiun Es tiba)",
+                            3 => "Pirates are arriving from the sea! (Bajak laut menyerang)",
+                            4 => "Martian Madness has begun! (Kegilaan Martian dimulai)",
+                            _ => "An invasion has begun! (Invasi dimulai)"
+                        };
+                        BroadcastServerMessage(invName);
+                    }
                 }
                 else if (inv == 0 && _lastInvasionType > 0)
                 {
                     _lastInvasionType = 0;
-                    BroadcastServerMessage("[SERVER] The invasion has been defeated! / Invasi telah dikalahkan!");
+                    if (readyToBroadcast)
+                    {
+                        BroadcastServerMessage("The invasion has been defeated! / Invasi telah dikalahkan!");
+                    }
                 }
 
-                // 5. Town NPC Arrivals & Boss Spawns
+                // Prune slot Town NPC & Boss yg sudah tidak aktif (JANGAN pernah .Clear() massal agar tidak re-spam!)
+                foreach (var slot in _activeTownNpcSlots.Keys.ToList())
+                {
+                    var existingNpc = (slot >= 0 && slot < Main.maxNPCs) ? Main.npc[slot] : null;
+                    if (existingNpc == null || !existingNpc.active || (!existingNpc.townNPC && !existingNpc.isLikeATownNPC))
+                    {
+                        _activeTownNpcSlots.Remove(slot);
+                    }
+                }
+                foreach (var bossSlot in _activeBossSlots.ToList())
+                {
+                    var existingBoss = (bossSlot >= 0 && bossSlot < Main.maxNPCs) ? Main.npc[bossSlot] : null;
+                    if (existingBoss == null || !existingBoss.active)
+                    {
+                        _activeBossSlots.Remove(bossSlot);
+                    }
+                }
+
+                bool allowTownNpcBroadcast = readyToBroadcast &&
+                    Config.RelayTownNpcArrivals &&
+                    DateTime.UtcNow >= _firstPlayerJoinGraceUntilUtc &&
+                    (!IsLobbyWorld() || Config.RelayLobbyTownNpcArrivals);
+
+                // 4. Town NPC Arrivals & Boss Spawns
                 for (int i = 0; i < Main.maxNPCs; i++)
                 {
                     var npc = Main.npc[i];
@@ -401,29 +673,37 @@ namespace Univers.Discord
                     // Town NPC
                     if ((npc.townNPC || npc.isLikeATownNPC) && !string.IsNullOrEmpty(npc.GivenName))
                     {
-                        if (_announcedTownNpcIndices.Add(i))
+                        string sig = $"{npc.type}:{npc.GivenName}";
+                        if (!_activeTownNpcSlots.TryGetValue(i, out var oldSig) || oldSig != sig)
                         {
-                            BroadcastServerMessage($"[SERVER] {npc.FullName} ({npc.GivenName}) has arrived! / telah tiba di dunia!");
+                            _activeTownNpcSlots[i] = sig;
+                            bool onCooldown = _recentTownNpcAnnouncements.TryGetValue(sig, out var lastNpcTime) &&
+                                              (DateTime.UtcNow - lastNpcTime).TotalMinutes < 20;
+                            _recentTownNpcAnnouncements[sig] = DateTime.UtcNow;
+
+                            if (allowTownNpcBroadcast && !onCooldown)
+                            {
+                                BroadcastServerMessage($"{npc.FullName} ({npc.GivenName}) has arrived! / telah tiba di dunia!");
+                            }
                         }
                     }
 
                     // Boss Spawn
                     if (npc.boss || BossContributionTracker.IsBossDefeatNpc(npc))
                     {
-                        if (_announcedBossIndices.Add(i))
+                        if (_activeBossSlots.Add(i) && readyToBroadcast)
                         {
-                            BroadcastServerMessage($"[SERVER] Boss **{npc.FullName}** has awoken! / telah bangkit!");
+                            string bossTitle = string.IsNullOrWhiteSpace(npc.FullName) ? "Boss" : npc.FullName;
+                            bool bossCooldown = _recentBossAwokenAnnouncements.TryGetValue(bossTitle, out var lastBossTime) &&
+                                                (DateTime.UtcNow - lastBossTime).TotalSeconds < 15;
+                            _recentBossAwokenAnnouncements[bossTitle] = DateTime.UtcNow;
+
+                            if (!bossCooldown)
+                            {
+                                BroadcastServerMessage($"Boss **{bossTitle}** has awoken! / telah bangkit!");
+                            }
                         }
                     }
-                }
-
-                if (_announcedBossIndices.Count > 64)
-                {
-                    _announcedBossIndices.Clear();
-                }
-                if (_announcedTownNpcIndices.Count > 128)
-                {
-                    _announcedTownNpcIndices.Clear();
                 }
             }
             catch { }
@@ -437,20 +717,10 @@ namespace Univers.Discord
             if (MultiWorldModule.IsChildProcess) return;
             if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
 
-            string clean = CleanTerrariaTextForDiscord(formattedChat);
-            if (string.IsNullOrWhiteSpace(clean)) return;
+            string formattedDesc = FormatInGameChatForDiscord(senderName, formattedChat);
+            if (string.IsNullOrWhiteSpace(formattedDesc)) return;
 
-            string worldTag = string.IsNullOrWhiteSpace(worldId) ? "SERVER" : worldId.Trim().ToUpperInvariant();
-            if (!clean.StartsWith($"[{worldTag}]", StringComparison.OrdinalIgnoreCase))
-            {
-                clean = $"**[{worldTag}]** {clean}";
-            }
-            else
-            {
-                clean = $"**[{worldTag}]**" + clean.Substring(worldTag.Length + 2);
-            }
-
-            _gateway.EnqueueRelayMessage(Config.RelayChannelId, clean);
+            EnqueueRelayPost(worldId, formattedDesc);
         }
 
         public static void NotifyPresenceEvent(string eventKind, string worldId, string playerName)
@@ -460,19 +730,18 @@ namespace Univers.Discord
             if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
             if (string.IsNullOrWhiteSpace(playerName)) return;
 
-            string worldTag = string.IsNullOrWhiteSpace(worldId) ? "SERVER" : worldId.Trim().ToUpperInvariant();
             string safeName = SanitizeDiscordMarkdown(playerName);
 
             string line = eventKind switch
             {
-                "server_join" => $"**[+]** `{safeName}` bergabung ke server (**{worldTag}**).",
-                "server_leave" => $"**[-]** `{safeName}` keluar dari server (**{worldTag}**).",
+                "server_join" => $"**[+]** `{safeName}` bergabung ke server.",
+                "server_leave" => $"**[-]** `{safeName}` keluar dari server.",
                 _ => string.Empty
             };
 
             if (!string.IsNullOrEmpty(line))
             {
-                _gateway.EnqueueRelayMessage(Config.RelayChannelId, line);
+                EnqueueRelayPost(worldId, line);
             }
         }
 
@@ -482,10 +751,11 @@ namespace Univers.Discord
             if (MultiWorldModule.IsChildProcess) return;
             if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
 
-            string clean = CleanTerrariaTextForDiscord(message);
+            string clean = CleanTerrariaTextForDiscord(message, preserveEmojiTags: true);
+            clean = StripWorldAndServerTags(clean);
             if (!string.IsNullOrWhiteSpace(clean))
             {
-                _gateway.EnqueueRelayMessage(Config.RelayChannelId, clean);
+                EnqueueRelayPost(worldId, clean);
             }
         }
 
@@ -500,16 +770,15 @@ namespace Univers.Discord
             if (string.IsNullOrEmpty(key)) return;
 
             string bossName = BossContributionTracker.GetBossDisplayName(key, npc);
-            string worldTag = MultiWorldModule.CurrentWorldId.ToUpperInvariant();
-            string msg = $"**[BOSS KALAH - {worldTag}]** `{SanitizeDiscordMarkdown(bossName)}` telah ditaklukkan!";
+            string msg = $"**Boss Ditaklukkan:** `{SanitizeDiscordMarkdown(bossName)}` telah dikalahkan!";
 
             if (MultiWorldModule.IsChildProcess)
             {
                 _ = MultiWorldModule.SendChildEventToDiscordAsync(MultiWorldModule.CurrentWorldId, msg);
             }
-            else if (_gateway != null && _gateway.IsConnected && !string.IsNullOrWhiteSpace(Config.RelayChannelId))
+            else
             {
-                _gateway.EnqueueRelayMessage(Config.RelayChannelId, msg);
+                EnqueueRelayPost(MultiWorldModule.CurrentWorldId, msg);
             }
         }
 
@@ -875,9 +1144,25 @@ namespace Univers.Discord
 
             int level = ExpApi.GetLevel(rec.AccountName);
             string rankName = GetCleanRankName(rec.AccountName);
-            await _gateway.SendMessageAsync(
-                msg.ChannelId,
-                $"**[IDENTITY]** Discord: <@{rec.DiscordUserId}> (`@{SanitizeDiscordMarkdown(rec.DiscordUsername)}`) <-> TShock: **`{rec.AccountName}`** | Rank: `{rankName}` | Lv.{level}");
+            int badgeId = ExpModule.Config?.GetBadgeIdForLevel(level) ?? ItemID.CopperShortsword;
+            string swordEmoji = Config.UseLevelSwordEmojisInRelay ? ResolveItemEmojiTag(badgeId) : string.Empty;
+            string badgePrefix = string.IsNullOrEmpty(swordEmoji) ? string.Empty : $"{swordEmoji} ";
+
+            string text = $"{badgePrefix}Discord: <@{rec.DiscordUserId}> (`@{SanitizeDiscordMarkdown(rec.DiscordUsername)}`) <-> TShock: **`{rec.AccountName}`** | Rank: `{rankName}` | Lv.{level}";
+            if (Config.UseEmbedsForRelay)
+            {
+                var embed = new JObject
+                {
+                    ["color"] = ResolveWorldEmbedColorInt(MultiWorldModule.CurrentWorldId),
+                    ["title"] = "Identitas Player",
+                    ["description"] = text
+                };
+                await _gateway.SendEmbedAsync(msg.ChannelId, embed, suppressMentions: true);
+            }
+            else
+            {
+                await _gateway.SendMessageAsync(msg.ChannelId, text);
+            }
         }
 
         private static async Task HandleDiscordOnlineAsync(DiscordIncomingMessage msg)
@@ -886,17 +1171,55 @@ namespace Univers.Discord
             var worlds = await MultiWorldModule.FetchAllWorldSnapshotsAsync();
             int total = worlds.Sum(w => w.PlayerCount);
 
-            if (total == 0)
+            if (Config.UseEmbedsForRelay)
             {
-                await _gateway.SendMessageAsync(msg.ChannelId, "**[SERVER ONLINE]** 0 pemain sedang online di seluruh world.");
+                if (total == 0)
+                {
+                    var emptyEmbed = new JObject
+                    {
+                        ["color"] = ResolveWorldEmbedColorInt("lobby"),
+                        ["title"] = "Pemain Online (0)",
+                        ["description"] = "Belum ada pemain yang sedang online."
+                    };
+                    await _gateway.SendEmbedAsync(msg.ChannelId, emptyEmbed, suppressMentions: true);
+                    return;
+                }
+
+                var fields = new JArray();
+                foreach (var w in worlds)
+                {
+                    string names = w.OnlinePlayerNames.Count > 0 ? SanitizeDiscordMarkdown(string.Join(", ", w.OnlinePlayerNames)) : "-";
+                    string label = string.IsNullOrWhiteSpace(w.DisplayName) ? w.Id : w.DisplayName;
+                    fields.Add(new JObject
+                    {
+                        ["name"] = $"{label} ({w.PlayerCount})",
+                        ["value"] = names,
+                        ["inline"] = true
+                    });
+                }
+
+                var embed = new JObject
+                {
+                    ["color"] = ResolveWorldEmbedColorInt("survival"),
+                    ["title"] = $"Pemain Online ({total})",
+                    ["fields"] = fields
+                };
+                await _gateway.SendEmbedAsync(msg.ChannelId, embed, suppressMentions: true);
                 return;
             }
 
-            var lines = new List<string> { $"**[SERVER ONLINE: {total} Pemain]**" };
+            if (total == 0)
+            {
+                await _gateway.SendMessageAsync(msg.ChannelId, "**Pemain Online:** 0 pemain sedang online.");
+                return;
+            }
+
+            var lines = new List<string> { $"**Pemain Online ({total}):**" };
             foreach (var w in worlds)
             {
                 string names = w.OnlinePlayerNames.Count > 0 ? string.Join(", ", w.OnlinePlayerNames) : "-";
-                lines.Add($"- **{w.Id.ToUpperInvariant()}** ({w.PlayerCount}): {SanitizeDiscordMarkdown(names)}");
+                string label = string.IsNullOrWhiteSpace(w.DisplayName) ? w.Id : w.DisplayName;
+                lines.Add($"- **{label}** ({w.PlayerCount}): {SanitizeDiscordMarkdown(names)}");
             }
             await _gateway.SendMessageAsync(msg.ChannelId, string.Join("\n", lines));
         }
@@ -906,13 +1229,26 @@ namespace Univers.Discord
             if (_gateway == null) return;
             string p = Config.CommandPrefix;
             string help =
-                $"**[UNIVERS DISCORD AUTHENTICATOR & RELAY]**\n" +
-                $"- `{p}verify <KODE>` : Verifikasi kode dari `/verify` in-game agar bisa chat di server\n" +
+                $"- `{p}verify <KODE>` : Verifikasi kode dari `/verify` in-game agar bisa chat\n" +
                 $"- `{p}link <AkunTShock>` : Minta verifikasi ke akunmu yang sedang online di game\n" +
                 $"- `{p}unlink` : Putuskan tautan akun Discord <-> TShock\n" +
                 $"- `{p}online` : Lihat daftar pemain online di Lobby & Survival\n" +
                 $"- `{p}who [nama/@user]` : Cek identitas resmi TShock & Rank player";
-            await _gateway.SendMessageAsync(msg.ChannelId, help);
+
+            if (Config.UseEmbedsForRelay)
+            {
+                var embed = new JObject
+                {
+                    ["color"] = ResolveWorldEmbedColorInt("lobby"),
+                    ["title"] = "Univers Discord Authenticator & Relay",
+                    ["description"] = help
+                };
+                await _gateway.SendEmbedAsync(msg.ChannelId, embed, suppressMentions: true);
+            }
+            else
+            {
+                await _gateway.SendMessageAsync(msg.ChannelId, $"**Univers Discord Authenticator & Relay**\n{help}");
+            }
         }
 
         private static async Task HandleDiscordAdminExecAsync(DiscordIncomingMessage msg, string rawCmd)
@@ -1225,11 +1561,11 @@ namespace Univers.Discord
             }
         }
 
-        // Sinkronkan role rank + element untuk satu member (hapus role sistem lain yg tidak dipakai).
-        private static async Task SyncRolesForAccountAsync(string guildId, string discordUserId, string accountName)
+        // Sinkronkan role rank + element + world untuk satu member (hapus role sistem lain yg tidak dipakai).
+        private static async Task SyncRolesForAccountAsync(string guildId, string discordUserId, string accountName, string? worldId = null)
         {
             if (_gateway == null || string.IsNullOrWhiteSpace(guildId) || string.IsNullOrWhiteSpace(discordUserId)) return;
-            if (!Config.SyncRankRoles && !Config.SyncElementRoles) return;
+            if (!Config.SyncRankRoles && !Config.SyncElementRoles && !Config.SyncWorldRoles) return;
 
             var current = await _gateway.GetMemberRoleIdsAsync(guildId, discordUserId);
             if (current == null) return;
@@ -1272,22 +1608,69 @@ namespace Univers.Discord
                     }
                 }
             }
+
+            if (Config.SyncWorldRoles && Config.WorldRoleIds.Count > 0 && !string.IsNullOrWhiteSpace(worldId))
+            {
+                var allWorldRoles = new HashSet<string>(Config.WorldRoleIds.Values);
+                string? want = Config.WorldRoleIds.TryGetValue(worldId, out var wr) ? wr : null;
+                foreach (var rid in allWorldRoles)
+                {
+                    if (string.IsNullOrWhiteSpace(rid)) continue;
+                    if (rid == want)
+                    {
+                        if (!curSet.Contains(rid)) { if (await _gateway.AddGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Add(rid); }
+                    }
+                    else if (curSet.Contains(rid))
+                    {
+                        if (await _gateway.RemoveGuildMemberRoleAsync(guildId, discordUserId, rid)) curSet.Remove(rid);
+                    }
+                }
+            }
         }
 
-        // Polling: sinkronkan semua player online yg sudah verify.
+        // Polling: sinkronkan semua player online (Lintas World: Lobby + Survival) yg sudah verify.
         private static async Task SyncAllOnlineRolesAsync()
         {
             if (_gateway == null || Database == null) return;
             string guildId = Config.GuildId;
             if (string.IsNullOrWhiteSpace(guildId)) return;
 
+            var syncedAccounts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var snapshots = await MultiWorldModule.FetchAllWorldSnapshotsAsync();
+                foreach (var w in snapshots)
+                {
+                    foreach (var pName in w.OnlinePlayerNames)
+                    {
+                        string accName = pName;
+                        var localPlayer = TShock.Players.FirstOrDefault(p =>
+                            p != null && p.Active && p.IsLoggedIn && p.Account != null &&
+                            (p.Name.Equals(pName, StringComparison.OrdinalIgnoreCase) || p.Account.Name.Equals(pName, StringComparison.OrdinalIgnoreCase)));
+                        if (localPlayer?.Account != null) accName = localPlayer.Account.Name;
+
+                        if (!syncedAccounts.Add(accName)) continue;
+
+                        var link = Database.GetByAccount(accName);
+                        if (link == null || !link.IsVerified) continue;
+
+                        try { await SyncRolesForAccountAsync(guildId, link.DiscordUserId, link.AccountName, w.Id); }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
             foreach (var player in TShock.Players)
             {
                 if (player == null || !player.Active || !player.IsLoggedIn || player.Account == null) continue;
+                if (!syncedAccounts.Add(player.Account.Name)) continue;
+
                 var link = Database.GetByAccount(player.Account.Name);
                 if (link == null || !link.IsVerified) continue;
 
-                try { await SyncRolesForAccountAsync(guildId, link.DiscordUserId, link.AccountName); }
+                try { await SyncRolesForAccountAsync(guildId, link.DiscordUserId, link.AccountName, MultiWorldModule.CurrentWorldId); }
                 catch { }
             }
         }
@@ -1399,13 +1782,310 @@ namespace Univers.Discord
             return "Mortal";
         }
 
-        private static string CleanTerrariaTextForDiscord(string text)
+        private static void EnqueueRelayPost(string? worldId, string description)
+        {
+            if (_gateway == null || !_gateway.IsConnected || string.IsNullOrWhiteSpace(Config.RelayChannelId)) return;
+            if (string.IsNullOrWhiteSpace(description)) return;
+
+            if (Config.UseEmbedsForRelay)
+            {
+                var embed = BuildRelayEmbed(worldId, description);
+                _gateway.EnqueueRelayEmbed(Config.RelayChannelId, embed);
+            }
+            else
+            {
+                _gateway.EnqueueRelayMessage(Config.RelayChannelId, description);
+            }
+        }
+
+        private static JObject BuildRelayEmbed(string? worldId, string description)
+        {
+            string safeDesc = description.Length > 3900 ? description.Substring(0, 3900) + "..." : description;
+            return new JObject
+            {
+                ["color"] = ResolveWorldEmbedColorInt(worldId),
+                ["description"] = safeDesc
+            };
+        }
+
+        private static int ResolveWorldEmbedColorInt(string? worldId)
+        {
+            string wid = string.IsNullOrWhiteSpace(worldId) ? "lobby" : worldId.Trim().ToLowerInvariant();
+
+            if (_worldRoleColors.TryGetValue(wid, out int roleColor) && roleColor > 0)
+            {
+                return roleColor;
+            }
+
+            if (Config.WorldEmbedColors != null && Config.WorldEmbedColors.TryGetValue(wid, out string? cfgHex) &&
+                TryParseHexColor(cfgHex, out int parsedCfg))
+            {
+                return parsedCfg;
+            }
+
+            try
+            {
+                var wDef = MultiWorldModule.Config?.GetWorld(wid);
+                if (wDef != null && TryParseHexColor(wDef.ChatColorHex, out int parsedWorld))
+                {
+                    return parsedWorld;
+                }
+            }
+            catch { }
+
+            return wid == "survival" ? 0x22C55E : (wid == "lobby" ? 0x38BDF8 : 0x94A3B8);
+        }
+
+        private static bool TryParseHexColor(string? hex, out int colorInt)
+        {
+            colorInt = 0;
+            if (string.IsNullOrWhiteSpace(hex)) return false;
+            string clean = hex.Trim().TrimStart('#');
+            if (clean.Length != 6) return false;
+            return int.TryParse(clean, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out colorInt);
+        }
+
+        private static string StripWorldAndServerTags(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+            string s = text.Trim();
+
+            var knownTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "SERVER",
+                "LOBBY",
+                "SURVIVAL"
+            };
+
+            try
+            {
+                if (MultiWorldModule.Config?.Worlds != null)
+                {
+                    foreach (var w in MultiWorldModule.Config.Worlds)
+                    {
+                        if (!string.IsNullOrWhiteSpace(w.Id) && !int.TryParse(w.Id, out _)) knownTags.Add(w.Id.Trim());
+                        if (!string.IsNullOrWhiteSpace(w.ChatTag) && !int.TryParse(w.ChatTag, out _)) knownTags.Add(w.ChatTag.Trim());
+                        if (!string.IsNullOrWhiteSpace(w.DisplayName) && !int.TryParse(w.DisplayName, out _)) knownTags.Add(w.DisplayName.Trim());
+                    }
+                }
+            }
+            catch { }
+
+            string joined = string.Join("|", knownTags.Select(Regex.Escape));
+            string leadingPattern = $@"^(?:\*\*\[(?:{joined})\]\*\*|\[(?:{joined})\])\s*";
+            for (int i = 0; i < 3; i++)
+            {
+                string next = Regex.Replace(s, leadingPattern, string.Empty, RegexOptions.IgnoreCase).TrimStart();
+                if (next == s) break;
+                s = next;
+            }
+
+            s = Regex.Replace(s, $@"\s*\(\*\*(?:{joined})\*\*\)\.?$", string.Empty, RegexOptions.IgnoreCase).Trim();
+            return s;
+        }
+
+        private static string FormatInGameChatForDiscord(string senderName, string formattedChat)
+        {
+            if (string.IsNullOrWhiteSpace(formattedChat)) return string.Empty;
+
+            // Hilangkan tag warna & achievement Terraria dulu, pertahankan tag item [i:ID]
+            string work = CleanTerrariaTextForDiscord(formattedChat, preserveEmojiTags: true);
+            work = StripWorldAndServerTags(work);
+            if (string.IsNullOrWhiteSpace(work)) return string.Empty;
+
+            string leadingEmoji = string.Empty;
+            var leadingItemMatch = Regex.Match(work, @"^\[i(?:/[^\]]*)?:(\d+)\]\s*");
+            if (leadingItemMatch.Success)
+            {
+                if (Config.UseLevelSwordEmojisInRelay && int.TryParse(leadingItemMatch.Groups[1].Value, out int badgeItemId))
+                {
+                    leadingEmoji = ResolveItemEmojiTag(badgeItemId);
+                }
+                work = work.Substring(leadingItemMatch.Length).TrimStart();
+            }
+
+            if (string.IsNullOrEmpty(leadingEmoji) && Config.UseLevelSwordEmojisInRelay && !string.IsNullOrWhiteSpace(senderName))
+            {
+                int lvl = ResolvePlayerLevelByName(senderName);
+                int fallbackBadgeId = ExpModule.Config?.GetBadgeIdForLevel(lvl) ?? ItemID.CopperShortsword;
+                leadingEmoji = ResolveItemEmojiTag(fallbackBadgeId);
+            }
+
+            // Konversi sisa tag [i:ID] di isi pesan menjadi custom Discord emoji atau [NamaItem]
+            work = Regex.Replace(work, @"\[i(?:/[^\]]*)?:(\d+)\]", m =>
+            {
+                if (int.TryParse(m.Groups[1].Value, out int itemId))
+                {
+                    string emoji = ResolveItemEmojiTag(itemId);
+                    if (!string.IsNullOrEmpty(emoji)) return emoji;
+                    string itemName = Lang.GetItemNameValue(itemId);
+                    return string.IsNullOrWhiteSpace(itemName) ? string.Empty : $"[{itemName}]";
+                }
+                return string.Empty;
+            });
+
+            work = Regex.Replace(work, @"\s{2,}", " ").Trim();
+            if (string.IsNullOrWhiteSpace(work)) return string.Empty;
+
+            string prefixEmoji = string.IsNullOrEmpty(leadingEmoji) ? string.Empty : $"{leadingEmoji} ";
+
+            int colonIdx = work.IndexOf(':');
+            if (colonIdx > 0 && colonIdx < 96)
+            {
+                string header = work.Substring(0, colonIdx).Replace("*", string.Empty).Trim();
+                string body = work.Substring(colonIdx + 1).TrimStart();
+                if (!string.IsNullOrWhiteSpace(header))
+                {
+                    return $"{prefixEmoji}**{header}:** {body}".TrimEnd();
+                }
+            }
+
+            return $"{prefixEmoji}{work}";
+        }
+
+        private static int ResolvePlayerLevelByName(string senderName)
+        {
+            try
+            {
+                foreach (var p in TShock.Players)
+                {
+                    if (p != null && p.Active && p.IsLoggedIn && p.Account != null &&
+                        (p.Name.Equals(senderName, StringComparison.OrdinalIgnoreCase) ||
+                         p.Account.Name.Equals(senderName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return ExpApi.GetLevel(p.Account.Name);
+                    }
+                }
+                return ExpApi.GetLevel(senderName);
+            }
+            catch
+            {
+                return 1;
+            }
+        }
+
+        private static string NormalizeEmojiKey(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+            return Regex.Replace(input.ToLowerInvariant(), @"[^a-z0-9]", string.Empty);
+        }
+
+        private static string ResolveItemEmojiTag(int itemId)
+        {
+            if (itemId <= 0) return string.Empty;
+
+            // 1. Cek override manual di Config.CustomEmojiMap berdasarkan ID
+            if (Config.CustomEmojiMap != null &&
+                Config.CustomEmojiMap.TryGetValue(itemId.ToString(CultureInfo.InvariantCulture), out string? mappedById) &&
+                !string.IsNullOrWhiteSpace(mappedById))
+            {
+                return mappedById.Trim();
+            }
+
+            // 2. Kumpulkan kandidat nama normalisasi
+            var candidates = new List<string>();
+
+            if (SwordBadgeAliases.TryGetValue(itemId, out var aliases))
+            {
+                candidates.AddRange(aliases);
+            }
+
+            try
+            {
+                if (ExpModule.Config?.BadgeTiers != null)
+                {
+                    foreach (var tier in ExpModule.Config.BadgeTiers.Values)
+                    {
+                        if (tier != null && tier.BadgeItemId == itemId && !string.IsNullOrWhiteSpace(tier.Title))
+                        {
+                            string titleMain = tier.Title.Split('(')[0].Trim();
+                            string normTitle = NormalizeEmojiKey(titleMain);
+                            if (!string.IsNullOrEmpty(normTitle)) candidates.Add(normTitle);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            string officialName = string.Empty;
+            try { officialName = Lang.GetItemNameValue(itemId) ?? string.Empty; } catch { }
+            string normOfficial = NormalizeEmojiKey(officialName);
+            if (!string.IsNullOrEmpty(normOfficial))
+            {
+                candidates.Add(normOfficial);
+                if (normOfficial.Contains("broadsword", StringComparison.Ordinal))
+                {
+                    candidates.Add(normOfficial.Replace("broadsword", "sword", StringComparison.Ordinal));
+                }
+                if (normOfficial.Contains("shortsword", StringComparison.Ordinal))
+                {
+                    candidates.Add(normOfficial.Replace("shortsword", "broadsword", StringComparison.Ordinal));
+                    candidates.Add(normOfficial.Replace("shortsword", "sword", StringComparison.Ordinal));
+                }
+            }
+
+            // 3. Cek override manual Config.CustomEmojiMap berdasarkan nama
+            if (Config.CustomEmojiMap != null)
+            {
+                foreach (var c in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (Config.CustomEmojiMap.TryGetValue(c, out string? mapped) && !string.IsNullOrWhiteSpace(mapped))
+                    {
+                        return mapped.Trim();
+                    }
+                }
+            }
+
+            // 4. Exact match terhadap custom emoji Discord server (normalized)
+            foreach (var c in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (_guildEmojisByNormName.TryGetValue(c, out string? tag))
+                {
+                    return tag;
+                }
+            }
+
+            // 5. Fallback substring match jika user menamai emoji mis. "univ_zenith" atau "sword_copper_broadsword"
+            foreach (var c in candidates.Where(x => x.Length >= 5).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                foreach (var kv in _guildEmojisByNormName)
+                {
+                    if (kv.Key.Contains(c, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return kv.Value;
+                    }
+                }
+            }
+
+            return string.Empty;
+        }
+
+        public static string GetCachedEmojiAndRoleSummary()
+        {
+            string lobbyCol = $"#{ResolveWorldEmbedColorInt("lobby"):x6}";
+            string survCol = $"#{ResolveWorldEmbedColorInt("survival"):x6}";
+            string emojiStatus =
+                $"Copper={YesNo(!string.IsNullOrEmpty(ResolveItemEmojiTag(ItemID.CopperShortsword)))}, " +
+                $"NightsEdge={YesNo(!string.IsNullOrEmpty(ResolveItemEmojiTag(ItemID.NightsEdge)))}, " +
+                $"TerraBlade={YesNo(!string.IsNullOrEmpty(ResolveItemEmojiTag(ItemID.TerraBlade)))}, " +
+                $"Solar={YesNo(!string.IsNullOrEmpty(ResolveItemEmojiTag(ItemID.FragmentSolar)))}, " +
+                $"Meowmere={YesNo(!string.IsNullOrEmpty(ResolveItemEmojiTag(ItemID.Meowmere)))}, " +
+                $"Zenith={YesNo(!string.IsNullOrEmpty(ResolveItemEmojiTag(ItemID.Zenith)))}";
+            return $"[ DISCORD ] Total Custom Emoji Server: {_guildEmojisExactName.Count} | Role Colors: Lobby={lobbyCol}, Survival={survCol} | Badges: {emojiStatus}";
+        }
+
+        private static string YesNo(bool ok) => ok ? "OK" : "MISSING";
+
+        private static string CleanTerrariaTextForDiscord(string text, bool preserveEmojiTags = false)
         {
             if (string.IsNullOrWhiteSpace(text)) return string.Empty;
 
-            // Hilangkan tag warna & item icon Terraria agar rapi di Discord
+            // Hilangkan tag warna & achievement Terraria agar rapi di Discord
             string clean = Regex.Replace(text, @"\[c/[0-9a-fA-F]{6}:([^\]]*)\]", "$1");
-            clean = Regex.Replace(clean, @"\[i(?:/[^\]]*)?:(\d+)\]", "");
+            if (!preserveEmojiTags)
+            {
+                clean = Regex.Replace(clean, @"\[i(?:/[^\]]*)?:(\d+)\]", "");
+            }
             clean = Regex.Replace(clean, @"\[a:([^\]]*)\]", "$1");
             clean = clean.Replace("@everyone", "@ everyone").Replace("@here", "@ here");
             return Regex.Replace(clean, @"\s{2,}", " ").Trim();
@@ -1416,6 +2096,8 @@ namespace Univers.Discord
             if (string.IsNullOrWhiteSpace(text)) return string.Empty;
 
             string s = text.Replace("\r", " ").Replace("\n", " ").Trim();
+            // Ubah custom emoji Discord <:nama:123456> menjadi :nama: agar terbaca rapi sebagai ASCII di game
+            s = Regex.Replace(s, @"<a?:([a-zA-Z0-9_]+):\d+>", ":$1:");
 
             if (Config.SanitizeTerrariaTagsFromDiscord)
             {

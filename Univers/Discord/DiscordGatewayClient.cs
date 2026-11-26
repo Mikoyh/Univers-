@@ -37,10 +37,31 @@ namespace Univers.Discord
         public List<string> RoleIds { get; set; } = new();
     }
 
+    public sealed class DiscordGuildRole
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public int Color { get; set; }
+    }
+
+    public sealed class DiscordGuildEmoji
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public bool Animated { get; set; }
+
+        public string FormatTag()
+        {
+            if (string.IsNullOrWhiteSpace(Id) || string.IsNullOrWhiteSpace(Name)) return string.Empty;
+            return Animated ? $"<a:{Name}:{Id}>" : $"<:{Name}:{Id}>";
+        }
+    }
+
     internal sealed class OutboundDiscordPost
     {
         public string ChannelId { get; set; } = string.Empty;
         public string Content { get; set; } = string.Empty;
+        public JObject? Embed { get; set; }
     }
 
     public sealed class DiscordGatewayClient : IDisposable
@@ -110,6 +131,25 @@ namespace Univers.Discord
             });
         }
 
+        public void EnqueueRelayEmbed(string channelId, JObject embed)
+        {
+            if (string.IsNullOrWhiteSpace(channelId) || embed == null || _cts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (_outboundQueue.Count > 250)
+            {
+                _outboundQueue.TryDequeue(out _);
+            }
+
+            _outboundQueue.Enqueue(new OutboundDiscordPost
+            {
+                ChannelId = channelId,
+                Embed = embed
+            });
+        }
+
         private async Task OutboundPumpLoopAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
@@ -118,23 +158,49 @@ namespace Univers.Discord
                 {
                     if (_outboundQueue.TryDequeue(out var first))
                     {
-                        var sb = new StringBuilder(first.Content);
                         string targetChannel = first.ChannelId;
 
-                        // Gabungkan pesan beruntun ke channel yang sama agar hemat rate-limit
-                        int merged = 1;
-                        while (merged < 6 &&
-                               _outboundQueue.TryPeek(out var next) &&
-                               next.ChannelId == targetChannel &&
-                               sb.Length + next.Content.Length + 2 <= 1850)
+                        if (first.Embed != null)
                         {
-                            _outboundQueue.TryDequeue(out _);
-                            sb.Append('\n').Append(next.Content);
-                            merged++;
-                        }
+                            var embeds = new List<JObject> { first.Embed };
+                            int totalChars = first.Embed.ToString(Formatting.None).Length;
 
-                        await SendMessageAsync(targetChannel, sb.ToString(), suppressMentions: true, ct);
-                        await Task.Delay(350, ct);
+                            // Gabungkan hingga 6 embed beruntun ke channel yang sama agar hemat rate-limit
+                            while (embeds.Count < 6 &&
+                                   _outboundQueue.TryPeek(out var next) &&
+                                   next.ChannelId == targetChannel &&
+                                   next.Embed != null)
+                            {
+                                int nextLen = next.Embed.ToString(Formatting.None).Length;
+                                if (totalChars + nextLen > 5200) break;
+                                _outboundQueue.TryDequeue(out _);
+                                embeds.Add(next.Embed);
+                                totalChars += nextLen;
+                            }
+
+                            await SendEmbedsAsync(targetChannel, embeds, suppressMentions: true, ct);
+                            await Task.Delay(350, ct);
+                        }
+                        else
+                        {
+                            var sb = new StringBuilder(first.Content);
+
+                            // Gabungkan pesan beruntun ke channel yang sama agar hemat rate-limit
+                            int merged = 1;
+                            while (merged < 6 &&
+                                   _outboundQueue.TryPeek(out var next) &&
+                                   next.ChannelId == targetChannel &&
+                                   next.Embed == null &&
+                                   sb.Length + next.Content.Length + 2 <= 1850)
+                            {
+                                _outboundQueue.TryDequeue(out _);
+                                sb.Append('\n').Append(next.Content);
+                                merged++;
+                            }
+
+                            await SendMessageAsync(targetChannel, sb.ToString(), suppressMentions: true, ct);
+                            await Task.Delay(350, ct);
+                        }
                     }
                     else
                     {
@@ -574,14 +640,54 @@ namespace Univers.Discord
                 };
             }
 
+            return await PostChannelMessageBodyAsync(channelId, body, ct);
+        }
+
+        public Task<string?> SendEmbedAsync(string channelId, JObject embed, bool suppressMentions = true, CancellationToken ct = default)
+        {
+            if (embed == null) return Task.FromResult<string?>(null);
+            return SendEmbedsAsync(channelId, new[] { embed }, suppressMentions, ct);
+        }
+
+        public async Task<string?> SendEmbedsAsync(string channelId, IReadOnlyList<JObject> embeds, bool suppressMentions = true, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(channelId) || embeds == null || embeds.Count == 0) return null;
+
+            var arr = new JArray();
+            int max = Math.Min(10, embeds.Count);
+            for (int i = 0; i < max; i++)
+            {
+                if (embeds[i] != null) arr.Add(embeds[i]);
+            }
+            if (arr.Count == 0) return null;
+
+            var body = new JObject
+            {
+                ["embeds"] = arr
+            };
+
+            if (suppressMentions)
+            {
+                body["allowed_mentions"] = new JObject
+                {
+                    ["parse"] = new JArray()
+                };
+            }
+
+            return await PostChannelMessageBodyAsync(channelId, body, ct);
+        }
+
+        private async Task<string?> PostChannelMessageBodyAsync(string channelId, JObject body, CancellationToken ct)
+        {
             try
             {
-                using var reqContent = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
+                string json = body.ToString(Formatting.None);
+                using var reqContent = new StringContent(json, Encoding.UTF8, "application/json");
                 using var resp = await _http.PostAsync($"{RestBaseUrl}/channels/{channelId}/messages", reqContent, ct);
                 if ((int)resp.StatusCode == 429)
                 {
                     await HandleRateLimitAsync(resp, ct);
-                    using var retryContent = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
+                    using var retryContent = new StringContent(json, Encoding.UTF8, "application/json");
                     using var retryResp = await _http.PostAsync($"{RestBaseUrl}/channels/{channelId}/messages", retryContent, ct);
                     if (retryResp.IsSuccessStatusCode)
                     {
@@ -760,10 +866,10 @@ namespace Univers.Discord
             return totalDeleted;
         }
 
-        // Ambil semua role di guild (id -> name) untuk memetakan role yg sudah ada.
-        public async Task<List<(string Id, string Name)>> GetGuildRolesAsync(string guildId, CancellationToken ct = default)
+        // Ambil semua role di guild (id, name, color).
+        public async Task<List<DiscordGuildRole>> GetGuildRolesDetailedAsync(string guildId, CancellationToken ct = default)
         {
-            var list = new List<(string, string)>();
+            var list = new List<DiscordGuildRole>();
             if (string.IsNullOrWhiteSpace(guildId)) return list;
             try
             {
@@ -775,7 +881,45 @@ namespace Univers.Discord
                     {
                         string? id = r["id"]?.ToString();
                         string? name = r["name"]?.ToString();
-                        if (!string.IsNullOrWhiteSpace(id) && name != null) list.Add((id!, name));
+                        int color = r["color"]?.Value<int>() ?? 0;
+                        if (!string.IsNullOrWhiteSpace(id) && name != null)
+                        {
+                            list.Add(new DiscordGuildRole { Id = id!, Name = name, Color = color });
+                        }
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        // Ambil semua role di guild (id -> name) untuk memetakan role yg sudah ada.
+        public async Task<List<(string Id, string Name)>> GetGuildRolesAsync(string guildId, CancellationToken ct = default)
+        {
+            var detailed = await GetGuildRolesDetailedAsync(guildId, ct);
+            return detailed.Select(r => (r.Id, r.Name)).ToList();
+        }
+
+        // Ambil semua custom emoji di guild Discord.
+        public async Task<List<DiscordGuildEmoji>> GetGuildEmojisAsync(string guildId, CancellationToken ct = default)
+        {
+            var list = new List<DiscordGuildEmoji>();
+            if (string.IsNullOrWhiteSpace(guildId)) return list;
+            try
+            {
+                using var resp = await _http.GetAsync($"{RestBaseUrl}/guilds/{guildId}/emojis", ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var arr = JArray.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    foreach (var e in arr)
+                    {
+                        string? id = e["id"]?.ToString();
+                        string? name = e["name"]?.ToString();
+                        bool animated = e["animated"]?.Value<bool>() ?? false;
+                        if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(name))
+                        {
+                            list.Add(new DiscordGuildEmoji { Id = id!, Name = name!, Animated = animated });
+                        }
                     }
                 }
             }
