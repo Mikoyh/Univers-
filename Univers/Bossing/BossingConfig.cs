@@ -21,13 +21,17 @@ namespace Univers.Bossing
         // World tempat sistem Elden Ring Bossing aktif (default: survival)
         public List<string> ActiveWorldIds { get; set; } = new() { "survival" };
 
-        // Pengali HP Boss (10x untuk semua mode: Classic / Expert / Master), Damage tetap 1x bawaan mode!
-        public double BossHpMultiplier { get; set; } = 10.0;
+        // Pengali HP Boss (default 5x untuk semua mode: Classic / Expert / Master), Damage tetap 1x bawaan mode!
+        public double BossHpMultiplier { get; set; } = 5.0;
 
         // Jaga agar damage boss tetap murni bawaan mode dunia (tidak pernah dikali)
         public bool KeepBossDamageUnchanged { get; set; } = true;
 
-        // Pengali hadiah Shards & EXP di BossContributionTracker (berbasis HP vanilla sebelum 10x agar ekonomi tetap seimbang)
+        // Pertahankan malam hari selama Night Boss (EoC, Skeletron, Twins, Destroyer, Skeletron Prime) masih aktif
+        // agar AI tidak rusak/kabur lurus ke langit saat fajar tiba
+        public bool KeepNightTimeForNightBosses { get; set; } = true;
+
+        // Pengali hadiah Shards & EXP di BossContributionTracker (berbasis HP vanilla sebelum 5x agar ekonomi tetap seimbang)
         public double BossRewardMultiplier { get; set; } = 1.5;
 
         // Radius Zona Sanctuary Tengah di sekitar World Spawn (dalam satuan tile ke kiri & kanan Main.spawnTileX)
@@ -49,7 +53,7 @@ namespace Univers.Bossing
         // Pengali HP khusus untuk Event Mini-Boss (default 1.0x agar Pumpkin/Frost Moon tetap adil sebelum pagi)
         public double EventMiniBossHpMultiplier { get; set; } = 1.0;
 
-        // Pengali HP khusus untuk 4 Celestial Pillars pasca-Lunatic Cultist (default 1.0x sebelum Moon Lord 10x)
+        // Pengali HP khusus untuk 4 Celestial Pillars pasca-Lunatic Cultist (default 1.0x sebelum Moon Lord 5x)
         public double CelestialPillarHpMultiplier { get; set; } = 1.0;
 
         // Jaga agar Event Mini-Boss & Celestial Pillars tidak masuk/spawn di dalam Zona Sanctuary Tengah

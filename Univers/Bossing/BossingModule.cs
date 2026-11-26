@@ -16,6 +16,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -71,6 +72,8 @@ namespace Univers.Bossing
         public bool HasSavedAi { get; set; }
         public bool HasSharedRealLife { get; set; }
         public int SyncCountdownTicks { get; set; } = 2;
+        public bool NeedsVisualBarSync { get; set; }
+        public DateTime LastBarSyncUtc { get; set; } = DateTime.MinValue;
     }
 
     public class TrackedBossEncounter
@@ -81,6 +84,7 @@ namespace Univers.Bossing
         public BossArenaSide Side { get; set; }
         public bool CountsTowardArenaSlot { get; set; } = true;
         public bool IsUnderworldEncounter { get; set; }
+        public bool IsNightOnlyBoss { get; set; }
         public Vector2 OriginPosition { get; set; }
         public int PrimaryNpcIndex { get; set; } = -1;
         public List<int> NpcIndices { get; } = new();
@@ -104,6 +108,8 @@ namespace Univers.Bossing
         private static string _configPath = string.Empty;
         private static bool _initialized;
         private static bool _internalRecovering;
+        [ThreadStatic]
+        private static bool _isSendingMappedNpcPacket;
 
         private static readonly object _syncRoot = new();
         private static readonly Dictionary<string, TrackedBossEncounter> _encounters = new(StringComparer.OrdinalIgnoreCase);
@@ -115,6 +121,8 @@ namespace Univers.Bossing
         private static DateTime _lastBarrierChatUtc = DateTime.MinValue;
         private static DateTime _lastPillarSpawnNoticeUtc = DateTime.MinValue;
         private static DateTime _lastLunarPillarsClearedUtc = DateTime.MinValue;
+        private static DateTime _lastNightSyncUtc = DateTime.MinValue;
+        private static DateTime _lastNightNoticeUtc = DateTime.MinValue;
         private static int _transientTickCounter;
 
         // Semua NPC Boss & bagian multi-part resmi Terraria
@@ -217,6 +225,25 @@ namespace Univers.Bossing
             NPCID.LunarTowerStardust
         };
 
+        // Boss malam hari yang AI-nya langsung kabur ke langit / enrage jika waktu berubah menjadi siang
+        // (Empress of Light / HallowBoss sengaja TIDAK dimasukkan agar Daytime EoL untuk Terraprisma tetap bisa!)
+        private static readonly HashSet<int> _nightOnlyBossTypes = new()
+        {
+            NPCID.EyeofCthulhu,
+            NPCID.SkeletronHead,
+            NPCID.SkeletronHand,
+            NPCID.Retinazer,
+            NPCID.Spazmatism,
+            NPCID.TheDestroyer,
+            NPCID.TheDestroyerBody,
+            NPCID.TheDestroyerTail,
+            NPCID.SkeletronPrime,
+            NPCID.PrimeCannon,
+            NPCID.PrimeSaw,
+            NPCID.PrimeVice,
+            NPCID.PrimeLaser
+        };
+
         // Mini-boss gelombang invasi / event (Pumpkin Moon, Frost Moon, Pirate, Martian, Old One's Army)
         private static readonly HashSet<int> _eventMiniBossTypes = new()
         {
@@ -280,6 +307,7 @@ namespace Univers.Bossing
             ServerApi.Hooks.NpcKilled.Register(UniversPlugin.Instance, OnNpcKilled);
             ServerApi.Hooks.NpcStrike.Register(UniversPlugin.Instance, OnNpcStrike);
             ServerApi.Hooks.NetGetData.Register(UniversPlugin.Instance, OnNetGetData);
+            ServerApi.Hooks.NetSendData.Register(UniversPlugin.Instance, OnNetSendData);
             ServerApi.Hooks.GameUpdate.Register(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.ServerCommand.Register(UniversPlugin.Instance, OnServerCommand);
             PlayerHooks.PlayerCommand += OnPlayerCommand;
@@ -321,6 +349,7 @@ namespace Univers.Bossing
             try { ServerApi.Hooks.NpcKilled.Deregister(UniversPlugin.Instance, OnNpcKilled); } catch { }
             try { ServerApi.Hooks.NpcStrike.Deregister(UniversPlugin.Instance, OnNpcStrike); } catch { }
             try { ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnNetGetData); } catch { }
+            try { ServerApi.Hooks.NetSendData.Deregister(UniversPlugin.Instance, OnNetSendData); } catch { }
             try { ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate); } catch { }
             try { ServerApi.Hooks.ServerCommand.Deregister(UniversPlugin.Instance, OnServerCommand); } catch { }
             try { PlayerHooks.PlayerCommand -= OnPlayerCommand; } catch { }
@@ -543,6 +572,124 @@ namespace Univers.Bossing
                 }
             }
             return cleared;
+        }
+
+        public static int AdminStopLunarEvent()
+        {
+            int cleared = 0;
+            lock (_syncRoot)
+            {
+                _lastLunarPillarsClearedUtc = DateTime.MinValue;
+
+                SetStaticBoolMember(typeof(NPC), "LunarApocalypseIsUp", false);
+                SetStaticBoolMember(typeof(NPC), "TowerActiveSolar", false);
+                SetStaticBoolMember(typeof(NPC), "TowerActiveVortex", false);
+                SetStaticBoolMember(typeof(NPC), "TowerActiveNebula", false);
+                SetStaticBoolMember(typeof(NPC), "TowerActiveStardust", false);
+                SetStaticIntMember(typeof(NPC), "ShieldStrengthTowerSolar", 0);
+                SetStaticIntMember(typeof(NPC), "ShieldStrengthTowerVortex", 0);
+                SetStaticIntMember(typeof(NPC), "ShieldStrengthTowerNebula", 0);
+                SetStaticIntMember(typeof(NPC), "ShieldStrengthTowerStardust", 0);
+                SetStaticIntMember(typeof(NPC), "MoonLordCountdown", 0);
+                SetStaticIntMember(typeof(WorldGen), "MoonLordCountdown", 0);
+
+                // Bersihkan semua 4 Celestial Pillars dari tracking & dunia
+                foreach (int idx in _transientBossStates.Keys.ToList())
+                {
+                    if (_transientBossStates.TryGetValue(idx, out var tst) && tst.Category == BossCategory.CelestialPillar)
+                    {
+                        _transientBossStates.Remove(idx);
+                    }
+                }
+
+                // Bersihkan encounter Moon Lord jika sedang countdown / aktif
+                foreach (var enc in _encounters.Values.Where(e => e.BossKey.Equals("MoonLord", StringComparison.OrdinalIgnoreCase)).ToList())
+                {
+                    foreach (int idx in enc.NpcIndices.ToList())
+                    {
+                        _genuinelyKilledSlots.Add(idx);
+                        _npcStates.Remove(idx);
+                        if (idx >= 0 && idx < Main.maxNPCs && Main.npc[idx] != null && Main.npc[idx].active)
+                        {
+                            Main.npc[idx].active = false;
+                            Main.npc[idx].life = 0;
+                            NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, idx);
+                            cleared++;
+                        }
+                    }
+                    _encounters.Remove(enc.EncounterId);
+                }
+
+                for (int i = 0; i < Main.maxNPCs; i++)
+                {
+                    var npc = Main.npc[i];
+                    if (npc == null || !npc.active) continue;
+
+                    bool isPillarOrMoonLord = _celestialPillarTypes.Contains(npc.type) ||
+                                              npc.type == NPCID.MoonLordCore ||
+                                              npc.type == NPCID.MoonLordHead ||
+                                              npc.type == NPCID.MoonLordHand;
+
+                    if (isPillarOrMoonLord)
+                    {
+                        _genuinelyKilledSlots.Add(i);
+                        _transientBossStates.Remove(i);
+                        _npcStates.Remove(i);
+                        npc.active = false;
+                        npc.life = 0;
+                        NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, i);
+                        cleared++;
+                    }
+                }
+            }
+
+            try
+            {
+                NetMessage.SendData((int)PacketTypes.WorldInfo, -1, -1, null);
+            }
+            catch { }
+
+            return cleared;
+        }
+
+        private static void SetStaticBoolMember(Type type, string memberName, bool value)
+        {
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+            try
+            {
+                var field = type.GetField(memberName, flags);
+                if (field != null && field.FieldType == typeof(bool))
+                {
+                    field.SetValue(null, value);
+                    return;
+                }
+                var prop = type.GetProperty(memberName, flags);
+                if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
+                {
+                    prop.SetValue(null, value);
+                }
+            }
+            catch { }
+        }
+
+        private static void SetStaticIntMember(Type type, string memberName, int value)
+        {
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+            try
+            {
+                var field = type.GetField(memberName, flags);
+                if (field != null && field.FieldType == typeof(int))
+                {
+                    field.SetValue(null, value);
+                    return;
+                }
+                var prop = type.GetProperty(memberName, flags);
+                if (prop != null && prop.CanWrite && prop.PropertyType == typeof(int))
+                {
+                    prop.SetValue(null, value);
+                }
+            }
+            catch { }
         }
 
         #endregion
@@ -989,7 +1136,16 @@ namespace Univers.Bossing
                     PushNpcOutOfCenterSanctuary(npc, npcSide, extraOffsetTiles: Config.OriginSafeOffsetFromSanctuaryTiles);
                 }
 
-                // Terapkan HP 10x (Damage TETAP 1x bawaan mode!)
+                bool isNightBoss = _nightOnlyBossTypes.Contains(npc.type);
+                if (isNightBoss && Config.KeepNightTimeForNightBosses && Main.dayTime)
+                {
+                    Main.dayTime = false;
+                    Main.time = 16200.0;
+                    _lastNightSyncUtc = DateTime.UtcNow;
+                    NetMessage.SendData((int)PacketTypes.TimeSet, -1, -1, null);
+                }
+
+                // Terapkan HP pengali (default 5x, Damage TETAP 1x bawaan mode!)
                 int baseLifeMax = Math.Max(1, npc.lifeMax);
                 int scaledLifeMax = baseLifeMax;
                 bool hasSharedLife = npc.realLife >= 0 && npc.realLife < Main.maxNPCs && npc.realLife != npc.whoAmI;
@@ -1021,6 +1177,7 @@ namespace Univers.Bossing
                         Side = npcSide,
                         CountsTowardArenaSlot = true,
                         IsUnderworldEncounter = (npc.Center.Y / 16f) >= Main.UnderworldLayer,
+                        IsNightOnlyBoss = isNightBoss,
                         OriginPosition = safeOrigin,
                         PrimaryNpcIndex = args.NpcId,
                         CreatedUtc = DateTime.UtcNow
@@ -1033,6 +1190,10 @@ namespace Univers.Bossing
                             $"[ BOSSING ] {display} bangkit di Arena {FormatSideLabel(npcSide)}! (HP {Config.BossHpMultiplier:0.#}x: {scaledLifeMax:N0} | DMG Normal Mode)",
                             new Color(251, 191, 36));
                     }
+                }
+                else if (isNightBoss)
+                {
+                    existing.IsNightOnlyBoss = true;
                 }
 
                 if (!existing.NpcIndices.Contains(args.NpcId))
@@ -1128,6 +1289,78 @@ namespace Univers.Bossing
             }
         }
 
+        private static void OnNetSendData(SendDataEventArgs args)
+        {
+            if (_isSendingMappedNpcPacket || args.Handled || !IsBossingActiveInCurrentWorld()) return;
+            if (args.MsgId != PacketTypes.NpcUpdate) return;
+
+            int idx = args.number;
+            if (idx < 0 || idx >= Main.maxNPCs) return;
+
+            var npc = Main.npc[idx];
+            if (npc == null || !npc.active || npc.life <= 0) return;
+
+            int baseLifeMax = 0;
+            int scaledLifeMax = 0;
+
+            lock (_syncRoot)
+            {
+                if (_npcStates.TryGetValue(idx, out var st) &&
+                    !st.HasSharedRealLife &&
+                    st.BaseLifeMax > 0 &&
+                    st.ScaledLifeMax > st.BaseLifeMax)
+                {
+                    baseLifeMax = st.BaseLifeMax;
+                    scaledLifeMax = st.ScaledLifeMax;
+                }
+                else if (_transientBossStates.TryGetValue(idx, out var tst) &&
+                         !tst.HasSharedRealLife &&
+                         tst.BaseLifeMax > 0 &&
+                         tst.ScaledLifeMax > tst.BaseLifeMax)
+                {
+                    baseLifeMax = tst.BaseLifeMax;
+                    scaledLifeMax = tst.ScaledLifeMax;
+                }
+            }
+
+            if (baseLifeMax <= 0 || scaledLifeMax <= baseLifeMax) return;
+
+            int savedLifeMax = npc.lifeMax;
+            int savedLife = npc.life;
+            double ratio = (double)savedLife / scaledLifeMax;
+            int visualLife = Math.Clamp((int)Math.Ceiling(baseLifeMax * ratio), 1, baseLifeMax);
+            if (savedLife < scaledLifeMax && baseLifeMax > 1 && visualLife >= baseLifeMax)
+            {
+                visualLife = baseLifeMax - 1;
+            }
+
+            _isSendingMappedNpcPacket = true;
+            try
+            {
+                npc.lifeMax = baseLifeMax;
+                npc.life = visualLife;
+                args.Handled = true;
+                NetMessage.SendData(
+                    (int)PacketTypes.NpcUpdate,
+                    args.remoteClient,
+                    args.ignoreClient,
+                    args.text,
+                    args.number,
+                    args.number2,
+                    args.number3,
+                    args.number4,
+                    args.number5,
+                    args.number6,
+                    args.number7);
+            }
+            finally
+            {
+                npc.lifeMax = savedLifeMax;
+                npc.life = savedLife;
+                _isSendingMappedNpcPacket = false;
+            }
+        }
+
         private static void OnNpcStrike(NpcStrikeEventArgs args)
         {
             if (!IsBossingActiveInCurrentWorld() || args.Npc == null) return;
@@ -1143,6 +1376,24 @@ namespace Univers.Bossing
                         int attackerIdx = (args.Player != null && args.Player.active) ? args.Player.whoAmI : 255;
                         WakeUpEncounter(enc, attackerIdx, announce: true);
                     }
+
+                    if (st.ScaledLifeMax > st.BaseLifeMax)
+                    {
+                        st.NeedsVisualBarSync = true;
+                        args.Npc.netUpdate = true;
+                    }
+
+                    if (st.HasSharedRealLife && args.Npc.realLife >= 0 && args.Npc.realLife < Main.maxNPCs &&
+                        _npcStates.TryGetValue(args.Npc.realLife, out var parentSt) &&
+                        parentSt.ScaledLifeMax > parentSt.BaseLifeMax)
+                    {
+                        parentSt.NeedsVisualBarSync = true;
+                        Main.npc[args.Npc.realLife].netUpdate = true;
+                    }
+                }
+                else if (_transientBossStates.TryGetValue(idx, out var tst) && tst.ScaledLifeMax > tst.BaseLifeMax)
+                {
+                    args.Npc.netUpdate = true;
                 }
             }
         }
@@ -1165,7 +1416,7 @@ namespace Univers.Bossing
                         if (Config.AnnounceBossEventsInChat)
                         {
                             TSPlayer.All.SendMessage(
-                                "[ BOSSING ] Ke-4 Celestial Pillars telah hancur! Keluar dari Sanctuary Tengah ke Arena KIRI/KANAN untuk menyambut Moon Lord (HP 10x)!",
+                                $"[ BOSSING ] Ke-4 Celestial Pillars telah hancur! Keluar dari Sanctuary Tengah ke Arena KIRI/KANAN untuk menyambut Moon Lord (HP {Config.BossHpMultiplier:0.#}x)!",
                                 new Color(56, 189, 248));
                         }
                     }
@@ -1233,9 +1484,40 @@ namespace Univers.Bossing
 
                 if (_encounters.Count == 0) return;
 
+                MaintainNightTimeIfNightBossActive(now);
+
                 foreach (var enc in _encounters.Values.ToList())
                 {
                     ProcessEncounterTick(enc, now);
+                }
+            }
+        }
+
+        private static void MaintainNightTimeIfNightBossActive(DateTime now)
+        {
+            if (!Config.KeepNightTimeForNightBosses) return;
+
+            bool hasActiveNightBoss = _encounters.Values.Any(e => e.IsNightOnlyBoss && HasAnyActiveNpc(e));
+            if (!hasActiveNightBoss) return;
+
+            if (Main.dayTime || Main.time >= 31000.0)
+            {
+                bool wasDay = Main.dayTime;
+                Main.dayTime = false;
+                Main.time = 16200.0; // Kunci di tengah malam agar EoC/Twins/Destroyer/Skeletron tidak kabur ke langit
+
+                if (wasDay || (now - _lastNightSyncUtc).TotalSeconds >= 2.0)
+                {
+                    _lastNightSyncUtc = now;
+                    NetMessage.SendData((int)PacketTypes.TimeSet, -1, -1, null);
+                }
+
+                if (wasDay && Config.AnnounceBossEventsInChat && (now - _lastNightNoticeUtc).TotalSeconds >= 30.0)
+                {
+                    _lastNightNoticeUtc = now;
+                    TSPlayer.All.SendMessage(
+                        "[ BOSSING ] Waktu malam dipertahankan sementara karena Night Boss masih aktif di arena!",
+                        new Color(147, 197, 253));
                 }
             }
         }
@@ -1357,14 +1639,22 @@ namespace Univers.Bossing
                         npc.timeLeft = 7500;
                     }
 
-                    // Kirim sinkronisasi HP Bar awal setelah spawn
+                    // Kirim sinkronisasi HP Bar awal atau pembaruan proporsional pasca-hit (anti packet-storm 100ms)
                     if (st.SyncCountdownTicks > 0)
                     {
                         st.SyncCountdownTicks--;
                         if (st.SyncCountdownTicks == 0)
                         {
+                            st.NeedsVisualBarSync = false;
+                            st.LastBarSyncUtc = now;
                             NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, idx);
                         }
+                    }
+                    else if (st.NeedsVisualBarSync && (now - st.LastBarSyncUtc).TotalMilliseconds >= 100)
+                    {
+                        st.NeedsVisualBarSync = false;
+                        st.LastBarSyncUtc = now;
+                        NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, idx);
                     }
 
                     // Catat HP terendah/terbaru dan posisi terakhir
@@ -1397,6 +1687,10 @@ namespace Univers.Bossing
                 {
                     WakeUpEncounter(enc, activeChallenger.Index, announce: enc.IsIdleAtOrigin || enc.IsReturningToOrigin);
                 }
+                else if (enc.IsNightOnlyBoss)
+                {
+                    SanitizeNightBossFleeAi(enc, activeChallenger.Index);
+                }
 
                 // Paksa batasan Sanctuary Tengah agar boss tidak bisa menyeberang ke tengah atau sisi seberang
                 EnforceCenterSanctuaryBoundary(enc, now);
@@ -1425,6 +1719,11 @@ namespace Univers.Bossing
 
             if (!enc.IsReturningToOrigin && !enc.IsIdleAtOrigin)
             {
+                if (enc.IsNightOnlyBoss)
+                {
+                    SanitizeNightBossFleeAi(enc, targetPlayerIndex: -1);
+                }
+
                 if ((now - enc.NoChallengerSinceUtc.Value).TotalSeconds < Config.NoChallengerGraceSeconds)
                 {
                     EnforceCenterSanctuaryBoundary(enc, now);
@@ -1521,6 +1820,10 @@ namespace Univers.Bossing
 
                 if (!st.HasSavedAi)
                 {
+                    if (enc.IsNightOnlyBoss)
+                    {
+                        SanitizeNightBossSingleNpcAi(npc, targetPlayerIndex: -1);
+                    }
                     Array.Copy(npc.ai, st.SavedAi, Math.Min(4, npc.ai.Length));
                     Array.Copy(npc.localAI, st.SavedLocalAi, Math.Min(4, npc.localAI.Length));
                     st.HasSavedAi = true;
@@ -1745,7 +2048,14 @@ namespace Univers.Bossing
                 {
                     npc.target = targetPlayerIndex;
                 }
+
+                if (enc.IsNightOnlyBoss)
+                {
+                    SanitizeNightBossSingleNpcAi(npc, targetPlayerIndex);
+                }
+
                 npc.timeLeft = 7500;
+                npc.netUpdate = true;
                 NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, idx);
             }
 
@@ -1755,6 +2065,70 @@ namespace Univers.Bossing
                 TSPlayer.All.SendMessage(
                     $"[ BOSSING ] {enc.DisplayName} di Arena {FormatSideLabel(enc.Side)} kembali bangkit bertarung! (HP tersisa: {curHp:N0}/{maxHp:N0})",
                     new Color(251, 191, 36));
+            }
+        }
+
+        private static void SanitizeNightBossFleeAi(TrackedBossEncounter enc, int targetPlayerIndex)
+        {
+            foreach (int idx in enc.NpcIndices)
+            {
+                if (idx < 0 || idx >= Main.maxNPCs) continue;
+                var npc = Main.npc[idx];
+                if (npc == null || !npc.active) continue;
+
+                SanitizeNightBossSingleNpcAi(npc, targetPlayerIndex);
+            }
+        }
+
+        private static void SanitizeNightBossSingleNpcAi(NPC npc, int targetPlayerIndex)
+        {
+            if (npc == null || !npc.active) return;
+
+            bool resetSync = false;
+
+            if (npc.type == NPCID.EyeofCthulhu || npc.type == NPCID.Retinazer || npc.type == NPCID.Spazmatism)
+            {
+                // ai[0] < 0 (-1) adalah state kabur lurus ke langit! Kembalikan ke phase combat aktif.
+                if (npc.ai[0] < 0f)
+                {
+                    bool phase2 = npc.life <= (npc.lifeMax * 0.5);
+                    npc.ai[0] = phase2 ? 3f : 0f;
+                    npc.ai[1] = 0f;
+                    npc.ai[2] = 0f;
+                    if (npc.velocity.Y < -4f) npc.velocity.Y = 0f;
+                    resetSync = true;
+                }
+            }
+            else if (npc.type == NPCID.SkeletronHead)
+            {
+                if (npc.ai[0] < 0f || npc.ai[1] == 3f)
+                {
+                    npc.ai[0] = 0f;
+                    npc.ai[1] = 0f;
+                    npc.ai[2] = 0f;
+                    if (npc.velocity.Y < -4f) npc.velocity.Y = 0f;
+                    resetSync = true;
+                }
+            }
+            else if (npc.type == NPCID.SkeletronPrime)
+            {
+                if (npc.ai[0] < 0f || npc.ai[0] == 3f)
+                {
+                    npc.ai[0] = 1f;
+                    npc.ai[1] = 0f;
+                    if (npc.velocity.Y < -4f) npc.velocity.Y = 0f;
+                    resetSync = true;
+                }
+            }
+
+            if (targetPlayerIndex >= 0 && targetPlayerIndex < 255)
+            {
+                npc.target = targetPlayerIndex;
+            }
+
+            if (resetSync)
+            {
+                npc.netUpdate = true;
             }
         }
 

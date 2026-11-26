@@ -117,6 +117,15 @@ namespace Univers.Bossing
                         player.SendSuccessMessage($"[ OK ] Pengali HP 4 Celestial Pillars sekarang: {cfg.CelestialPillarHpMultiplier:0.#}x.");
                         return;
 
+                    case "stoppillars":
+                    case "resetpillars":
+                    case "stoplunar":
+                    case "clearpillars":
+                        if (!RequireAdmin(player)) return;
+                        int lunarCleared = BossingModule.AdminStopLunarEvent();
+                        player.SendSuccessMessage($"[ OK ] Lunar Event & 4 Celestial Pillars direset ({lunarCleared} entitas dihapus, Moon Lord countdown dihentikan).");
+                        return;
+
                     case "clear":
                     case "reset":
                         if (!RequireAdmin(player)) return;
@@ -181,7 +190,7 @@ namespace Univers.Bossing
 
             if (player.HasPermission("univers.bossing.admin"))
             {
-                player.SendMessage("[ ADMIN ] /bossing clear [left|right|all] | setradius <tile> | sethpmult <n> | seteventhpmult <n> | setpillarhpmult <n> | toggle | reload", Color.Yellow);
+                player.SendMessage("[ ADMIN ] /bossing clear [left|right|all] | stoppillars | setradius <tile> | sethpmult <n> | seteventhpmult <n> | setpillarhpmult <n> | toggle | reload", Color.Yellow);
             }
         }
 
