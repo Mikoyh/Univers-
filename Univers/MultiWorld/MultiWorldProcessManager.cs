@@ -192,7 +192,7 @@ namespace Univers.MultiWorld
                 }
 
                 var rt = _children.TryGetValue(def.Id, out var found) ? found : null;
-                bool alive = rt?.Process != null && !rt.Process.HasExited;
+                bool alive = (rt?.Process != null && !rt.Process.HasExited) || (rt?.IpcRegistered == true);
                 string stateStr = rt == null
                     ? "Sleeping"
                     : (alive || rt.State == WorldRuntimeState.Booting || rt.State == WorldRuntimeState.Running)

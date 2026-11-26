@@ -723,7 +723,37 @@ namespace Univers.Discord
             string formattedDesc = FormatInGameChatForDiscord(senderName, formattedChat);
             if (string.IsNullOrWhiteSpace(formattedDesc)) return;
 
-            EnqueueRelayPost(worldId, formattedDesc);
+            EnqueueRelayPost(worldId, PrependWorldPylon(formattedDesc, worldId));
+        }
+
+        // Ikon pylon per world: lobby = Universal_Pylon, world lain = Forest_Pylon.
+        private static string ResolveWorldPylonEmoji(string? worldId)
+        {
+            string name = (string.IsNullOrWhiteSpace(worldId) || worldId.Equals("lobby", StringComparison.OrdinalIgnoreCase))
+                ? "Universal_Pylon"
+                : "Forest_Pylon";
+
+            if (_guildEmojisExactName.TryGetValue(name, out string? tag) && !string.IsNullOrWhiteSpace(tag))
+                return tag!;
+
+            string norm = NormalizeEmojiKey(name);
+            if (!string.IsNullOrEmpty(norm))
+            {
+                if (_guildEmojisByNormName.TryGetValue(norm, out tag) && !string.IsNullOrWhiteSpace(tag))
+                    return tag!;
+                foreach (var kv in _guildEmojisByNormName)
+                {
+                    if (kv.Key.Contains(norm, StringComparison.OrdinalIgnoreCase))
+                        return kv.Value;
+                }
+            }
+            return string.Empty;
+        }
+
+        private static string PrependWorldPylon(string description, string? worldId)
+        {
+            string pylon = ResolveWorldPylonEmoji(worldId);
+            return string.IsNullOrEmpty(pylon) ? description : $"[{pylon}] {description}";
         }
 
         public static void NotifyPresenceEvent(string eventKind, string worldId, string playerName)
@@ -1206,9 +1236,10 @@ namespace Univers.Discord
                 {
                     string names = w.OnlinePlayerNames.Count > 0 ? SanitizeDiscordMarkdown(string.Join(", ", w.OnlinePlayerNames)) : "-";
                     string label = string.IsNullOrWhiteSpace(w.DisplayName) ? w.Id : w.DisplayName;
+                    string icon = ResolveWorldPylonEmoji(w.Id);
                     fields.Add(new JObject
                     {
-                        ["name"] = $"{label} ({w.PlayerCount})",
+                        ["name"] = $"{(string.IsNullOrEmpty(icon) ? string.Empty : icon + " ")}{label} ({w.PlayerCount})",
                         ["value"] = names,
                         ["inline"] = true
                     });
@@ -1235,7 +1266,8 @@ namespace Univers.Discord
             {
                 string names = w.OnlinePlayerNames.Count > 0 ? string.Join(", ", w.OnlinePlayerNames) : "-";
                 string label = string.IsNullOrWhiteSpace(w.DisplayName) ? w.Id : w.DisplayName;
-                lines.Add($"- **{label}** ({w.PlayerCount}): {SanitizeDiscordMarkdown(names)}");
+                string icon = ResolveWorldPylonEmoji(w.Id);
+                lines.Add($"- {(string.IsNullOrEmpty(icon) ? string.Empty : icon + " ")}**{label}** ({w.PlayerCount}): {SanitizeDiscordMarkdown(names)}");
             }
             await _gateway.SendMessageAsync(msg.ChannelId, string.Join("\n", lines));
         }
