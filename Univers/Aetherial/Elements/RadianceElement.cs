@@ -38,7 +38,7 @@ namespace Univers.Aetherial.Elements
             ElementVisualHelper.SpawnOrbitAura(
                 owner.TPlayer.Center,
                 ProjectileID.FallingStar,
-                ProjectileID.RainbowRod,
+                ProjectileID.RainbowRodBullet,
                 count,
                 radius,
                 4.8f,
@@ -125,7 +125,7 @@ namespace Univers.Aetherial.Elements
                 ElementVisualHelper.SpawnMagicRitualRing(
                     target.Center,
                     ownerIdx,
-                    ProjectileID.RainbowRod,
+                    ProjectileID.RainbowRodBullet,
                     ProjectileID.FairyQueenSunDance,
                     ProjectileID.StardustTowerMark,
                     radius: 72f,
@@ -223,7 +223,7 @@ namespace Univers.Aetherial.Elements
                 ElementVisualHelper.SpawnMagicRitualRing(
                     target.Center,
                     ownerIdx,
-                    ProjectileID.RainbowRod,
+                    ProjectileID.RainbowRodBullet,
                     ProjectileID.FairyQueenSunDance,
                     ProjectileID.StardustTowerMark,
                     radius: 68f,
@@ -269,7 +269,7 @@ namespace Univers.Aetherial.Elements
                 ElementVisualHelper.SpawnMagicRitualRing(
                     target.Center,
                     ownerIdx,
-                    ProjectileID.RainbowRod,
+                    ProjectileID.RainbowRodBullet,
                     ProjectileID.ScutlixLaserFriendly,
                     ProjectileID.HallowBossSplitShotCore,
                     radius: 62f,
@@ -304,7 +304,7 @@ namespace Univers.Aetherial.Elements
                 ElementVisualHelper.SpawnMagicRitualRing(
                     target.Center,
                     ownerIdx,
-                    ProjectileID.RainbowRod,
+                    ProjectileID.RainbowRodBullet,
                     ProjectileID.FairyQueenSunDance,
                     ProjectileID.StardustTowerMark,
                     radius: 76f,

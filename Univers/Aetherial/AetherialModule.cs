@@ -622,7 +622,7 @@ namespace Univers.Aetherial
                 "TORRENT" => new[] { 22, 405, 409, 1135 },
                 "VOLT" => new[] { 121, 496, 617, 634 },
                 "BRAMBLE" => new[] { 206, 513, 228, 1038 },
-                "RADIANCE" => new[]
+                "RADIANCE" => new int[]
                 {
                     ProjectileID.FallingStar,
                     ProjectileID.ScutlixLaserFriendly,
