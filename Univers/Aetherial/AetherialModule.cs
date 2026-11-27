@@ -46,7 +46,31 @@ namespace Univers.Aetherial
         private static readonly ConcurrentDictionary<int, Item> SavedTrashItems = new();
         private static readonly ConcurrentDictionary<int, DateTime> OmniaGemExpirations = new();
         private static readonly ConcurrentDictionary<int, DateTime> ElementSkillCooldowns = new();
+        private static readonly ConcurrentDictionary<int, DomainInputState> DomainInputs = new();
+        private static readonly ConcurrentDictionary<int, ActiveDomainState> ActiveDomains = new();
+        private static readonly ConcurrentDictionary<int, DateTime> DomainCooldowns = new();
+        private static readonly ConcurrentDictionary<int, DateTime> DomainCooldownNotifyThrottle = new();
         private static readonly Random Rnd = new();
+
+        private sealed class DomainInputState
+        {
+            public bool PrevDown;
+            public bool PrevUseItem;
+            public int DownTapCount;
+            public DateTime LastDownTapUtc;
+            public DateTime ReadyUntilUtc;
+            public DateTime LastPromptUtc;
+        }
+
+        private sealed class ActiveDomainState
+        {
+            public int OwnerIndex { get; init; }
+            public string ElementId { get; init; } = string.Empty;
+            public Vector2 Center { get; init; }
+            public int Tier { get; init; }
+            public DateTime ExpiresAtUtc { get; init; }
+            public int PulseCount { get; set; }
+        }
 
         public static readonly Dictionary<string, IElementProfile> ElementRegistry = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -77,6 +101,7 @@ namespace Univers.Aetherial
             ServerApi.Hooks.GameUpdate.Register(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.ServerLeave.Register(UniversPlugin.Instance, OnServerLeave);
             ServerApi.Hooks.NetGreetPlayer.Register(UniversPlugin.Instance, OnPlayerGreet);
+            ServerApi.Hooks.NetGetData.Register(UniversPlugin.Instance, OnNetGetData);
             GetDataHandlers.PlayerInfo += OnPlayerInfo;
             GetDataHandlers.PlayerDamage += OnPlayerDamage;
 
@@ -93,6 +118,7 @@ namespace Univers.Aetherial
             ServerApi.Hooks.GameUpdate.Deregister(UniversPlugin.Instance, OnGameUpdate);
             ServerApi.Hooks.ServerLeave.Deregister(UniversPlugin.Instance, OnServerLeave);
             ServerApi.Hooks.NetGreetPlayer.Deregister(UniversPlugin.Instance, OnPlayerGreet);
+            ServerApi.Hooks.NetGetData.Deregister(UniversPlugin.Instance, OnNetGetData);
             GetDataHandlers.PlayerInfo -= OnPlayerInfo;
             GetDataHandlers.PlayerDamage -= OnPlayerDamage;
 
@@ -102,6 +128,10 @@ namespace Univers.Aetherial
             SavedTrashItems.Clear();
             OmniaGemExpirations.Clear();
             ElementSkillCooldowns.Clear();
+            DomainInputs.Clear();
+            ActiveDomains.Clear();
+            DomainCooldowns.Clear();
+            DomainCooldownNotifyThrottle.Clear();
             Database?.Dispose();
         }
 
@@ -149,6 +179,10 @@ namespace Univers.Aetherial
             ClearPlayerFloatingGem(playerIndex);
             OmniaGemExpirations.TryRemove(playerIndex, out _);
             ElementSkillCooldowns.TryRemove(playerIndex, out _);
+            DomainInputs.TryRemove(playerIndex, out _);
+            ActiveDomains.TryRemove(playerIndex, out _);
+            DomainCooldowns.TryRemove(playerIndex, out _);
+            DomainCooldownNotifyThrottle.TryRemove(playerIndex, out _);
         }
 
         private static int _tickCounter = 0;
@@ -211,6 +245,182 @@ namespace Univers.Aetherial
                     }
                 }
             }
+
+            foreach (var kvp in ActiveDomains.ToArray())
+            {
+                int ownerIdx = kvp.Key;
+                var domain = kvp.Value;
+                var owner = (ownerIdx >= 0 && ownerIdx < TShock.Players.Length) ? TShock.Players[ownerIdx] : null;
+
+                if (owner == null || !owner.Active || !owner.IsLoggedIn || owner.TPlayer == null || owner.Dead || now >= domain.ExpiresAtUtc)
+                {
+                    ActiveDomains.TryRemove(ownerIdx, out _);
+                    if (owner != null && owner.Active && owner.IsLoggedIn)
+                    {
+                        owner.SendInfoMessage($"[ AETHERIAL ] Domain Expansion ({domain.ElementId}) telah berakhir.");
+                    }
+                    continue;
+                }
+
+                var elemMod = GetElementProfile(domain.ElementId);
+                if (elemMod != null && elemMod.SupportsDomainExpansion)
+                {
+                    domain.PulseCount++;
+                    elemMod.OnDomainPulse(owner, domain.Center, domain.Tier, domain.PulseCount);
+                }
+            }
+        }
+
+        private static void OnNetGetData(GetDataEventArgs args)
+        {
+            if (args.Handled || args.MsgID != PacketTypes.PlayerUpdate || args.Length < 2) return;
+
+            int who = args.Msg.whoAmI;
+            if (who < 0 || who >= TShock.Players.Length) return;
+
+            var player = TShock.Players[who];
+            if (player == null || !player.Active || !player.IsLoggedIn || !player.RealPlayer || player.TPlayer == null || player.Dead) return;
+
+            BitsByte controlBits = args.Msg.readBuffer[args.Index + 1];
+            bool isDown = controlBits[1];
+            bool isUseItem = controlBits[5];
+
+            var state = DomainInputs.GetOrAdd(who, _ => new DomainInputState());
+            bool downPressed = isDown && !state.PrevDown;
+            bool usePressed = isUseItem && !state.PrevUseItem;
+            state.PrevDown = isDown;
+            state.PrevUseItem = isUseItem;
+
+            if (!downPressed && !usePressed) return;
+
+            var profile = Database?.GetOrCreateProfile(player.Account.Name);
+            var elemMod = GetElementProfile(profile?.AssignedElement ?? "");
+            if (elemMod == null || !elemMod.SupportsDomainExpansion) return;
+
+            DateTime now = DateTime.UtcNow;
+
+            if (downPressed)
+            {
+                if ((now - state.LastDownTapUtc).TotalSeconds > 0.95)
+                    state.DownTapCount = 1;
+                else
+                    state.DownTapCount = Math.Min(2, state.DownTapCount + 1);
+
+                state.LastDownTapUtc = now;
+
+                if (state.DownTapCount == 2)
+                {
+                    state.ReadyUntilUtc = now.AddSeconds(1.5);
+
+                    bool onCooldown = DomainCooldowns.TryGetValue(who, out DateTime cdUntil) && now < cdUntil;
+                    if (!onCooldown && !ActiveDomains.ContainsKey(who) && (now - state.LastPromptUtc).TotalSeconds >= 1.2)
+                    {
+                        player.SendData(
+                            PacketTypes.CreateCombatTextExtended,
+                            $"[c/{elemMod.HexColor}:[ DOMAIN READY - KLIK KIRI! ]]",
+                            (int)player.TPlayer.position.X,
+                            (int)player.TPlayer.position.Y - 34);
+                        state.LastPromptUtc = now;
+                    }
+                }
+            }
+
+            if (usePressed && state.DownTapCount >= 2 && now <= state.ReadyUntilUtc)
+            {
+                state.DownTapCount = 0;
+                state.ReadyUntilUtc = DateTime.MinValue;
+                TryActivateDomainExpansion(player);
+            }
+        }
+
+        public static bool TryActivateDomainExpansion(TSPlayer player)
+        {
+            if (player == null || !player.Active || !player.IsLoggedIn || player.TPlayer == null) return false;
+
+            if (player.Dead)
+            {
+                player.SendErrorMessage("[ ERROR ] Kamu tidak dapat mengaktifkan Domain Expansion saat mati!");
+                return false;
+            }
+
+            var profile = Database?.GetOrCreateProfile(player.Account.Name);
+            if (profile == null || string.IsNullOrEmpty(profile.AssignedElement))
+            {
+                player.SendWarningMessage("[ INFO ] Elemen jiwamu belum terbangun! Ketik /element awaken terlebih dahulu.");
+                return false;
+            }
+
+            var elemMod = GetElementProfile(profile.AssignedElement);
+            if (elemMod == null || !elemMod.SupportsDomainExpansion)
+            {
+                string elemLabel = string.IsNullOrEmpty(profile.AssignedElement) ? "NONE" : profile.AssignedElement.ToUpperInvariant();
+                player.SendWarningMessage($"[ INFO ] Domain Expansion untuk elemen {elemLabel} belum tersedia (tahap tes saat ini: IGNIS).");
+                return false;
+            }
+
+            DateTime now = DateTime.UtcNow;
+
+            if (ActiveDomains.ContainsKey(player.Index))
+            {
+                player.SendInfoMessage($"[ AETHERIAL ] Domain Expansion ({elemMod.DomainName}) masih aktif!");
+                return false;
+            }
+
+            if (DomainCooldowns.TryGetValue(player.Index, out DateTime cdUntil) && now < cdUntil)
+            {
+                int secLeft = Math.Max(1, (int)Math.Ceiling((cdUntil - now).TotalSeconds));
+                if (!DomainCooldownNotifyThrottle.TryGetValue(player.Index, out DateTime nextMsg) || now >= nextMsg)
+                {
+                    DomainCooldownNotifyThrottle[player.Index] = now.AddSeconds(1.5);
+                    player.SendData(
+                        PacketTypes.CreateCombatTextExtended,
+                        $"[c/94a3b8:[ DOMAIN CD: {secLeft}s ]]",
+                        (int)player.TPlayer.position.X,
+                        (int)player.TPlayer.position.Y - 30);
+                    player.SendWarningMessage($"[ COOLDOWN ] Domain {elemMod.DomainName} siap digunakan dalam {secLeft} detik.");
+                }
+                return false;
+            }
+
+            int tier = GetTierStatsForLevel(Math.Max(1, profile.ElementLevel)).TierNumber;
+            double durationSec = 4.5 + (tier * 0.5);
+            int cooldownSec = Math.Max(10, Config.DomainCooldownSeconds);
+            Vector2 castCenter = player.TPlayer.Center;
+
+            DomainCooldowns[player.Index] = now.AddSeconds(cooldownSec);
+            ActiveDomains[player.Index] = new ActiveDomainState
+            {
+                OwnerIndex = player.Index,
+                ElementId = elemMod.ElementId,
+                Center = castCenter,
+                Tier = tier,
+                ExpiresAtUtc = now.AddSeconds(durationSec),
+                PulseCount = 0
+            };
+
+            elemMod.OnDomainActivate(player, castCenter, tier);
+
+            string titleText = $"[c/{elemMod.HexColor}:[ DOMAIN EXPANSION: {elemMod.DomainName}! ]]";
+            foreach (var nearby in TShock.Players)
+            {
+                if (nearby == null || !nearby.Active || !nearby.IsLoggedIn || nearby.TPlayer == null) continue;
+                if ((nearby.TPlayer.Center - castCenter).Length() <= 1400f)
+                {
+                    nearby.SendData(
+                        PacketTypes.CreateCombatTextExtended,
+                        titleText,
+                        (int)player.TPlayer.position.X,
+                        (int)player.TPlayer.position.Y - 46);
+
+                    if (nearby.Index != player.Index)
+                    {
+                        nearby.SendInfoMessage($"[ AETHERIAL ] {player.Name} membuka Domain [c/{elemMod.HexColor}:{elemMod.DomainName}]!");
+                    }
+                }
+            }
+
+            player.SendSuccessMessage($"[ AETHERIAL ] Domain Expansion [c/{elemMod.HexColor}:{elemMod.DomainName}] aktif selama {durationSec:0.0} detik! (Cooldown: {cooldownSec}s)");
+            return true;
         }
 
         #region [1] COMBAT ENGINE HOOK (NpcStrike & Reaction Processing)

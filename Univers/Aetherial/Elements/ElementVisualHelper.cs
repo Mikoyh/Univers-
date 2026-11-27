@@ -45,12 +45,13 @@ namespace Univers.Aetherial.Elements
             int timeLeft,
             float outwardSpeed = 2.5f,
             int ownerIndex = -1,
-            float scale = 1f)
+            float scale = 1f,
+            float angleOffset = 0f)
         {
             if (count <= 0) return;
             for (int i = 0; i < count; i++)
             {
-                double angle = (Math.PI * 2.0 / count) * i;
+                double angle = angleOffset + (Math.PI * 2.0 / count) * i;
                 Vector2 offset = new Vector2((float)Math.Cos(angle) * radius, (float)Math.Sin(angle) * radius);
                 Vector2 vel = new Vector2((float)Math.Cos(angle) * outwardSpeed, (float)Math.Sin(angle) * outwardSpeed);
                 SpawnVisualProjectile(center + offset, vel, projId, timeLeft, ownerIndex, scale: scale);
@@ -113,7 +114,8 @@ namespace Univers.Aetherial.Elements
             int chordCount = 4,
             float spinSpeed = 4.2f,
             int timeLeft = 30,
-            bool tryNativeCultistRitual = true)
+            bool tryNativeCultistRitual = true,
+            float angleOffset = 0f)
         {
             if (tryNativeCultistRitual)
             {
@@ -137,7 +139,7 @@ namespace Univers.Aetherial.Elements
             {
                 for (int i = 0; i < outerCount; i++)
                 {
-                    float angle = MathHelper.TwoPi * i / outerCount;
+                    float angle = angleOffset + MathHelper.TwoPi * i / outerCount;
                     Vector2 offset = new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * radius;
                     Vector2 tangentVel = new Vector2(-(float)Math.Sin(angle), (float)Math.Cos(angle)) * spinSpeed;
                     SpawnVisualProjectile(center + offset, tangentVel, ringOuterProjId, timeLeft, ownerIndex);
@@ -148,7 +150,7 @@ namespace Univers.Aetherial.Elements
             {
                 for (int k = 0; k < chordCount; k++)
                 {
-                    float a1 = MathHelper.TwoPi * k / chordCount;
+                    float a1 = angleOffset + MathHelper.TwoPi * k / chordCount;
                     float a2 = a1 + (float)(Math.PI * 0.75);
                     Vector2 p1 = center + new Vector2((float)Math.Cos(a1), (float)Math.Sin(a1)) * (radius * 0.9f);
                     Vector2 p2 = center + new Vector2((float)Math.Cos(a2), (float)Math.Sin(a2)) * (radius * 0.9f);

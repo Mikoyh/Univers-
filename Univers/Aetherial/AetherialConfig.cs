@@ -18,6 +18,7 @@ namespace Univers.Aetherial
         public double SoloSynergyBonusPercent { get; set; } = 5.0; // +5% Damage
         public double SoloMarkedBonusPercent { get; set; } = 10.0; // +10% Damage
         public double SecretElementOmniaChancePercent { get; set; } = 0.000001; // 0.000001% Chance Easter Egg
+        public int DomainCooldownSeconds { get; set; } = 45; // Cooldown Domain Expansion (detik)
 
         public static AetherialConfig Load(string path)
         {

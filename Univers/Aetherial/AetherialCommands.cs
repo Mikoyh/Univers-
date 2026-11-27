@@ -33,6 +33,23 @@ namespace Univers.Aetherial
             {
                 HelpText = "Set level elemen & level utama pemain: /setelementlevel <player> <1-1000>"
             });
+
+            Commands.ChatCommands.Add(new Command("", HandleDomainCommand, "domain", "ult", "domainexpansion")
+            {
+                HelpText = "Mengaktifkan Domain Expansion elemen aktif (bisa juga lewat S -> S -> Klik Kiri)"
+            });
+        }
+
+        private static void HandleDomainCommand(CommandArgs args)
+        {
+            var player = args.Player;
+            if (player == null || !player.IsLoggedIn || !player.RealPlayer)
+            {
+                args.Player?.SendErrorMessage("[ ERROR ] Perintah /domain hanya dapat digunakan di dalam game setelah login!");
+                return;
+            }
+
+            AetherialModule.TryActivateDomainExpansion(player);
         }
 
         private static void HandleAwakenDirect(CommandArgs args)
@@ -95,6 +112,11 @@ namespace Univers.Aetherial
                 case "daftar":
                 case "info":
                     ShowElementCatalog(player);
+                    break;
+
+                case "domain":
+                case "ult":
+                    AetherialModule.TryActivateDomainExpansion(player);
                     break;
 
                 default:
@@ -203,6 +225,11 @@ namespace Univers.Aetherial
                 player.SendInfoMessage("[c/4ade80:[ + ] Large Gem Aktif: Kristal berputar di atas kepala saat tag aktif!]");
             else
                 player.SendInfoMessage("[c/94a3b8:Large Gem terbuka mulai Tier 4 (Lv. 180+). Skill 10 detik terbuka mulai Tier 2 (Lv. 25+).]");
+
+            if (elemProf != null && elemProf.SupportsDomainExpansion)
+            {
+                player.SendInfoMessage($"[c/{elemHex}:[ DOMAIN ] {elemProf.DomainName}: Tekan S -> S -> Klik Kiri (atau ketik /domain)]");
+            }
 
             if (elem == "OMNIA")
             {

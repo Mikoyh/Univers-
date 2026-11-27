@@ -168,5 +168,125 @@ namespace Univers.Aetherial.Elements
                 ElementVisualHelper.SpawnVisualProjectile(owner.TPlayer.Center, dir * 8.5f, ElementVisualHelper.ProjFoxparksFireball, 25, owner.Index);
             }
         }
+
+        // [DOMAIN EXPANSION - KHUSUS IGNIS TEST]: Ryoiki Tenkai: CRIMSON HELLFIRE
+        public bool SupportsDomainExpansion => true;
+        public string DomainName => "CRIMSON HELLFIRE";
+
+        public static float GetDomainRadius(int tier) => 175f + (Math.Clamp(tier, 1, 7) * 35f);
+
+        public void OnDomainActivate(TSPlayer owner, Vector2 center, int tier)
+        {
+            if (owner == null || !owner.Active || owner.TPlayer == null) return;
+
+            int ownerIdx = owner.Index;
+            float radius = GetDomainRadius(tier);
+            int perimeterCount = Math.Min(12, 6 + tier);
+
+            // Cincin pembuka di batas arena Domain
+            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.SolarFlareRay, perimeterCount, radius * 0.85f, 34, 3.5f, ownerIdx);
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.SolarWhipSwordExplosion, 30, ownerIdx);
+
+            if (tier >= 3)
+            {
+                ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 30, ownerIdx);
+                ElementVisualHelper.SpawnMagicRitualRing(
+                    center,
+                    ownerIdx,
+                    ProjectileID.SolarFlareRay,
+                    ProjectileID.EyeBeam,
+                    ProjectileID.SolarWhipSwordExplosion,
+                    radius: Math.Min(90f, radius * 0.35f),
+                    outerCount: 8,
+                    chordCount: 4,
+                    spinSpeed: 5.0f,
+                    timeLeft: 32);
+            }
+
+            owner.SetBuff(BuffID.Inferno, (6 + tier) * 60);
+            if (tier >= 4) owner.SetBuff(BuffID.Wrath, (6 + tier) * 60);
+            if (tier >= 6) owner.SetBuff(BuffID.Lifeforce, (6 + tier) * 60);
+        }
+
+        public void OnDomainPulse(TSPlayer owner, Vector2 center, int tier, int pulseIndex)
+        {
+            if (owner == null || !owner.Active || owner.TPlayer == null) return;
+
+            int ownerIdx = owner.Index;
+            float radius = GetDomainRadius(tier);
+            float spinAngle = pulseIndex * 0.42f;
+
+            // 1. Batas luar Domain berputar setiap 0.5 detik (hemat paket)
+            int edgeCount = Math.Min(10, 5 + tier);
+            int edgeProj = (pulseIndex % 2 == 0) ? ProjectileID.SolarFlareRay : ProjectileID.AmberBolt;
+            for (int i = 0; i < edgeCount; i++)
+            {
+                float angle = spinAngle + MathHelper.TwoPi * i / edgeCount;
+                Vector2 edgePos = center + new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * radius;
+                Vector2 tangentVel = new Vector2(-(float)Math.Sin(angle), (float)Math.Cos(angle)) * 4.5f;
+                ElementVisualHelper.SpawnVisualProjectile(edgePos, tangentVel, edgeProj, 24, ownerIdx);
+            }
+
+            // 2. Sigil inti / letusan tengah berkala
+            if (pulseIndex % 4 == 0)
+            {
+                ElementVisualHelper.SpawnMagicRitualRing(
+                    center,
+                    ownerIdx,
+                    ProjectileID.SolarFlareRay,
+                    tier >= 5 ? ProjectileID.EyeBeam : 0,
+                    ProjectileID.SolarWhipSwordExplosion,
+                    radius: Math.Min(84f, radius * 0.32f),
+                    outerCount: 6,
+                    chordCount: tier >= 5 ? 3 : 0,
+                    spinSpeed: 4.8f,
+                    timeLeft: 28,
+                    tryNativeCultistRitual: false,
+                    angleOffset: spinAngle);
+            }
+            else if (pulseIndex % 2 == 0 && tier >= 4)
+            {
+                ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 24, ownerIdx);
+            }
+
+            // 3. Refresh aura pelindung jika caster berada di dalam Domain
+            if ((owner.TPlayer.Center - center).Length() <= radius)
+            {
+                owner.SetBuff(BuffID.Inferno, 180);
+                owner.SetBuff(BuffID.Campfire, 180);
+            }
+
+            // 4. Bakar & bombardir maksimal 4 musuh aktif di dalam area Domain
+            int hitCount = 0;
+            int pulseDamage = 25 + (tier * 28);
+            int debuffId = GetMobDebuffId(tier);
+
+            foreach (var npc in Main.npc)
+            {
+                if (npc == null || !npc.active || npc.friendly || npc.lifeMax <= 5 || npc.dontTakeDamage) continue;
+                if ((npc.Center - center).Length() > radius) continue;
+
+                npc.AddBuff(debuffId, 240);
+                if (tier >= 5) npc.AddBuff(BuffID.OnFire3, 240);
+                NetMessage.SendData((int)PacketTypes.NpcUpdateBuff, -1, -1, null, npc.whoAmI);
+
+                int hitDir = npc.Center.X >= center.X ? 1 : -1;
+                npc.StrikeNPC(pulseDamage, 1.5f, hitDir);
+                NetMessage.SendData((int)PacketTypes.NpcStrike, -1, -1, null, npc.whoAmI, pulseDamage, 1.5f, hitDir);
+
+                Vector2 strikeDir = ElementVisualHelper.GetAimDirection(center, npc.Center);
+                int strikeProj = tier switch
+                {
+                    <= 3 => ElementVisualHelper.ProjFoxparksFireball,
+                    <= 5 => ProjectileID.DD2PhoenixBowShot,
+                    6 => ProjectileID.DD2BetsyFireball,
+                    _ => ProjectileID.Daybreak
+                };
+                ElementVisualHelper.SpawnVisualProjectile(npc.Center - strikeDir * 32f, strikeDir * 10f, strikeProj, 24, ownerIdx);
+
+                hitCount++;
+                if (hitCount >= 4) break;
+            }
+        }
     }
 }

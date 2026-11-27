@@ -1,3 +1,4 @@
+using Microsoft.Xna.Framework;
 using Terraria;
 using TShockAPI;
 
@@ -27,5 +28,11 @@ namespace Univers.Aetherial
 
         // Pasif saat pemilik elemen dipukul Player lain (PvP)
         void OnDamagedByPlayer(TSPlayer owner, TSPlayer attackerPlayer, int damageTaken, int tier) { }
+
+        // [DOMAIN EXPANSION]: Ultimate aktif via kombinasi S -> S -> Klik Kiri atau /domain
+        bool SupportsDomainExpansion => false;
+        string DomainName => "AETHERIAL DOMAIN";
+        void OnDomainActivate(TSPlayer owner, Vector2 center, int tier) { }
+        void OnDomainPulse(TSPlayer owner, Vector2 center, int tier, int pulseIndex) { }
     }
 }
