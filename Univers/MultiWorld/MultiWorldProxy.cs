@@ -707,9 +707,13 @@ namespace Univers.MultiWorld
         private static byte MapBackendSlotToClient(ProxySession observerSession, byte backendSlot)
         {
             if (backendSlot == 255) return 255;
-            // Wajib permutasi 1-to-1 per-session agar dua client dengan ClientSlot sama (mis. sama-sama slot 0)
-            // tidak pernah bertabrakan saat pindah world atau main bareng di child world.
-            return MapSlot(backendSlot, observerSession.BackendSlot, observerSession.ClientSlot);
+            // Hanya slot DIRI SENDIRI (BackendSlot) yang dipetakan ke ClientSlot.
+            // Slot player LAIN dibiarkan apa adanya. Swap 2-arah lama membuat player lain
+            // yang backendSlot-nya kebetulan == ClientSlot observer tertukar ke slot diri,
+            // sehingga projectile (Zenith dll) hilang / tampil di badan observer.
+            return backendSlot == observerSession.BackendSlot
+                ? observerSession.ClientSlot
+                : backendSlot;
         }
 
         private void TrackBackendEntityPacket(ProxySession session, byte[] packet)

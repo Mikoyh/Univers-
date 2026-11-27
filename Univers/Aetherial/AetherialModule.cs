@@ -289,7 +289,11 @@ namespace Univers.Aetherial
                 var elemMod = GetElementProfile(domain.ElementId);
                 if (elemMod != null && elemMod.SupportsDomainExpansion)
                 {
-                    float domainRadius = 450f + (domain.Tier * 75f);
+                    // Radius harus sama dengan radius visual domain (Ignis diperluas), bukan formula lama.
+                    float domainRadius = domain.ElementId == "IGNIS"
+                        ? Elements.IgnisElement.GetDomainRadius(domain.Tier)
+                        : 450f + (domain.Tier * 75f);
+
                     bool hasEnemies = false;
                     foreach (var npc in Main.npc)
                     {
@@ -302,12 +306,16 @@ namespace Univers.Aetherial
                             }
                         }
                     }
-                    if (!hasEnemies)
+
+                    if (hasEnemies)
                     {
-                        if ((domain.ExpiresAtUtc - now).TotalSeconds > 10.0)
-                        {
-                            domain.ExpiresAtUtc = now.AddSeconds(10.0);
-                        }
+                        // Selama masih ada musuh di dalam domain, tahan domain tetap aktif
+                        // (rolling +10s) supaya projectile spam tidak pernah berhenti.
+                        domain.ExpiresAtUtc = now.AddSeconds(10.0);
+                    }
+                    else if ((domain.ExpiresAtUtc - now).TotalSeconds > 10.0)
+                    {
+                        domain.ExpiresAtUtc = now.AddSeconds(10.0);
                     }
 
                     domain.PulseCount++;
@@ -478,7 +486,9 @@ namespace Univers.Aetherial
             };
 
             // [EKSPERIMEN BRUTAL + LUAS]: Radius lebih besar, aman dari chest/pintu, dan dinding background neraka (Hellstone Wall)!
-            float domainRadius = 450f + (Math.Clamp(tier, 1, 7) * 75f);
+            float domainRadius = domainState.ElementId == "IGNIS"
+                ? Elements.IgnisElement.GetDomainRadius(tier)
+                : 450f + (Math.Clamp(tier, 1, 7) * 75f);
             int centerTileX = (int)(castCenter.X / 16f);
             int centerTileY = (int)(castCenter.Y / 16f);
             int radiusTiles = (int)(domainRadius / 16f);

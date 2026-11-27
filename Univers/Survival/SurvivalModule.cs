@@ -434,6 +434,20 @@ namespace Univers.Survival
             if (!_initialized) return;
 
             DateTime frameNow = DateTime.UtcNow;
+
+            // Sinkronkan bendera GodMode in-game dengan status /godmode TShock.
+            // SSC restore / resync karakter bisa menimpa TPlayer.GodMode, sehingga godmode
+            // "tidak ngaruh" dan player harus relogin. Paksa balik tiap frame.
+            foreach (var gp in TShock.Players)
+            {
+                if (gp == null || !gp.Active || !gp.IsLoggedIn || gp.TPlayer == null) continue;
+                if (gp.GodMode && !gp.TPlayer.creativeGodMode)
+                {
+                    gp.TPlayer.creativeGodMode = true;
+                    NetMessage.SendData((int)PacketTypes.PlayerInfo, -1, -1, null, gp.Index);
+                }
+            }
+
             if (IsSurvivalActiveInCurrentWorld())
             {
                 foreach (var player in TShock.Players)
@@ -822,7 +836,9 @@ namespace Univers.Survival
 
         private static void ApplySurvivalConsequences(TSPlayer player, SurvivalRuntimeState st, bool nearBoss, DateTime now)
         {
-            if (player.GodMode) return;
+            // GodMode bisa hilang dari TPlayer (mis. setelah SSC restore / resync), padahal
+            // player.GodMode masih true. Cek dua-duanya supaya tidak mati padahal /godmode aktif.
+            if (player.GodMode || (player.TPlayer != null && player.TPlayer.creativeGodMode)) return;
             var prof = st.Profile;
 
             // A. Kegelapan Total (Charlie Effect!)

@@ -1216,6 +1216,42 @@ namespace Univers.Discord
         {
             if (_gateway == null) return;
             var worlds = await MultiWorldModule.FetchAllWorldSnapshotsAsync();
+
+            // Fallback: gabungkan player real yang online di proses ini (mis. world survival yang
+            // heartbeat IPC-nya telat/belum terkirim) agar !online tidak pernah kosong.
+            try
+            {
+                var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var w in worlds)
+                    foreach (var n in w.OnlinePlayerNames) known.Add(n);
+
+                var localNames = MultiWorldModule.GetLocalActivePlayerNames()
+                    .Where(n => !string.IsNullOrWhiteSpace(n) && !known.Contains(n))
+                    .ToList();
+
+                if (localNames.Count > 0)
+                {
+                    string localWorldId = MultiWorldModule.CurrentWorldId;
+                    var existing = worlds.FirstOrDefault(w => w.Id.Equals(localWorldId, StringComparison.OrdinalIgnoreCase));
+                    if (existing != null)
+                    {
+                        existing.OnlinePlayerNames.AddRange(localNames);
+                        existing.PlayerCount = existing.OnlinePlayerNames.Count;
+                    }
+                    else
+                    {
+                        worlds.Add(new WorldStatusSnapshot
+                        {
+                            Id = localWorldId,
+                            DisplayName = localWorldId,
+                            PlayerCount = localNames.Count,
+                            OnlinePlayerNames = localNames
+                        });
+                    }
+                }
+            }
+            catch { }
+
             int total = worlds.Sum(w => w.PlayerCount);
 
             if (Config.UseEmbedsForRelay)

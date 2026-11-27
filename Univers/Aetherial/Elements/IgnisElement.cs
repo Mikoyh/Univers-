@@ -174,7 +174,8 @@ namespace Univers.Aetherial.Elements
         public bool SupportsDomainExpansion => true;
         public string DomainName => "CRIMSON HELLFIRE";
 
-        public static float GetDomainRadius(int tier) => 450f + (Math.Clamp(tier, 1, 7) * 75f);
+        // Area diperluas supaya boss besar tetap muat di dalam domain.
+        public static float GetDomainRadius(int tier) => 620f + (Math.Clamp(tier, 1, 7) * 95f);
 
         public void OnDomainActivate(TSPlayer owner, Vector2 center, int tier)
         {
@@ -193,18 +194,19 @@ namespace Univers.Aetherial.Elements
             ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.SolarWhipSwordExplosion, 34, ownerIdx, scale: 1.5f);
             ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.DD2ExplosiveTrapT3Explosion, 32, ownerIdx, scale: 1.4f);
 
-            // 3. Magic Ritual Circle Magma Kosmik
+            // 3. Magic Ritual Circle Magma Kosmik (pakai meteor api, bukan sinar cahaya)
             ElementVisualHelper.SpawnMagicRitualRing(
                 center,
                 ownerIdx,
-                ProjectileID.SolarFlareRay,
-                ProjectileID.FairyQueenSunDance,
+                ProjectileID.DD2BetsyFireball,
+                ElementVisualHelper.ProjVolcano144,
                 ProjectileID.DD2BetsyFireball,
                 radius: Math.Min(120f, radius * 0.45f),
                 outerCount: 12,
                 chordCount: 6,
                 spinSpeed: 6.5f,
-                timeLeft: 40);
+                timeLeft: 40,
+                tryNativeCultistRitual: false);
 
             // 4. Hujan Meteor Magma Awal (Volcanic Rain Burst - BRUTAL)
             ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.DD2BetsyFireball, 12, radius * 1.5f, 190f, 15f, 35, ownerIdx);
@@ -263,14 +265,14 @@ namespace Univers.Aetherial.Elements
             ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.FlamingScythe, 4, radius * 1.2f, 160f, 14f, 28, ownerIdx);
             ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 4, radius * 1.3f, 180f, 15f, 28, ownerIdx);
 
-            // 4. Letusan Sigil Inti Berkala
+            // 4. Letusan Sigil Inti Berkala (meteor, tanpa sinar cahaya)
             if (pulseIndex % 2 == 0)
             {
                 ElementVisualHelper.SpawnMagicRitualRing(
                     center,
                     ownerIdx,
-                    ProjectileID.SolarFlareRay,
-                    ProjectileID.EyeBeam,
+                    ProjectileID.DD2BetsyFireball,
+                    ElementVisualHelper.ProjVolcano144,
                     ProjectileID.DD2BetsyFireball,
                     radius: Math.Min(110f, radius * 0.4f),
                     outerCount: 10,
