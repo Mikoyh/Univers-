@@ -444,7 +444,7 @@ namespace Univers.Aetherial
 
                             t.type = TileID.HellstoneBrick; // Blok Magma Menyala!
                             t.active(true);
-                            TSPlayer.All.SendTileSquare(x, y, 1);
+                            TSPlayer.All.SendTileSquareCentered(x, y, 1);
                         }
                     }
                 }
