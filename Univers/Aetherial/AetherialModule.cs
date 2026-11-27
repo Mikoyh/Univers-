@@ -421,7 +421,7 @@ namespace Univers.Aetherial
             };
 
             // [EKSPERIMEN BRUTAL]: Bentuk dinding penjara blok Hellstone Brick melingkar 1 blok di batas domain!
-            float domainRadius = IgnisElement.GetDomainRadius(tier);
+            float domainRadius = 190f + (Math.Clamp(tier, 1, 7) * 40f);
             int centerTileX = (int)(castCenter.X / 16f);
             int centerTileY = (int)(castCenter.Y / 16f);
             int radiusTiles = (int)(domainRadius / 16f);

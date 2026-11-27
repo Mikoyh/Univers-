@@ -8,6 +8,7 @@ namespace Univers.Aetherial.Elements
 {
     public class IgnisElement : IElementProfile
     {
+        private static readonly Random Rnd = new();
         public string ElementId => "IGNIS";
         public string HexColor => "f97316";      // Oranye Api
         public int LargeGemItemId => ItemID.LargeAmber;
