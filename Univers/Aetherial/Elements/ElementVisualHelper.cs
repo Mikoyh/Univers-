@@ -182,7 +182,7 @@ namespace Univers.Aetherial.Elements
         {
             if (projId <= 0) return;
 
-            int effectiveOwner = (ownerIndex >= 0 && ownerIndex < 255) ? ownerIndex : Main.myPlayer;
+            int effectiveOwner = 255;
             Vector2 finalVel = vel;
 
             // Lightning arc (aiStyle 88: 466 CultistBossLightningOrbArc, 580 VortexLightning) butuh arah & seed non-nol

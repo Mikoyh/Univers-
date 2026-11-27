@@ -70,7 +70,7 @@ namespace Univers.Aetherial
             public int Tier { get; init; }
             public DateTime ExpiresAtUtc { get; init; }
             public int PulseCount { get; set; }
-            public Dictionary<Point, (ushort type, bool active, short frameX, short frameY)> OriginalTiles { get; init; } = new();
+            public Dictionary<Point, (ushort type, bool active, short frameX, short frameY, ushort wall)> OriginalTiles { get; init; } = new();
         }
 
         public static readonly Dictionary<string, IElementProfile> ElementRegistry = new(StringComparer.OrdinalIgnoreCase)
@@ -273,6 +273,7 @@ namespace Univers.Aetherial
                                 t.active(original.active);
                                 t.frameX = original.frameX;
                                 t.frameY = original.frameY;
+                                t.wall = original.wall;
                                 TSPlayer.All.SendTileSquareCentered(pt.X, pt.Y, 1);
                             }
                         }
@@ -447,27 +448,29 @@ namespace Univers.Aetherial
 
                     // Jangan pernah ubah Chest, Pintu, TILE container/tile penting agar item aman tidak hilang
                     if (t.type == TileID.Containers || t.type == TileID.Containers2 || t.type == TileID.ClosedDoor || 
-                        t.type == TileID.OpenDoor || t.type == TileID.Platforms || t.type == TileID.Beds || t.type == TileID.Tables)
+                        t.type == TileID.OpenDoor || t.type == TileID.Beds || t.type == TileID.Tables)
                     {
                         continue;
                     }
 
                     var pt = new Point(x, y);
 
-                    // 1. Dinding batas luar domain (Hellstone Brick)
+                    // 1. Dinding batas luar domain (Hellstone Brick) - skip changing type if it's a platform, but cover wall
                     if (distTiles >= radiusTiles - 1.4f && distTiles <= radiusTiles + 0.8f)
                     {
-                        domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY);
-                        t.type = TileID.HellstoneBrick;
-                        t.active(true);
+                        domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY, t.wall);
+                        if (t.type != TileID.Platforms)
+                        {
+                            t.type = TileID.HellstoneBrick;
+                            t.active(true);
+                        }
+                        t.wall = 83;
                         TSPlayer.All.SendTileSquareCentered(x, y, 1);
                     }
-                    // 2. Interior dalam domain: pasang wall Neraka (Hellstone Wall) biar suasana gelap/merah merinding
+                    // 2. Interior dalam domain & platform gaps: pasang wall Neraka (Hellstone Wall)
                     else if (distTiles < radiusTiles - 1.4f)
                     {
-                        // Simpan wall asli juga kalau mau (opsional, kita simpan type tile & wall)
-                        // Untuk amannya kita ubah background wall jadi Hellstone Wall (ID 14 atau sejenisnya, misal WallID.HellstoneBrick / 83)
-                        domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY);
+                        domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY, t.wall);
                         t.wall = 83; // Hellstone Brick Wall
                         TSPlayer.All.SendTileSquareCentered(x, y, 1);
                     }
