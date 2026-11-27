@@ -273,7 +273,7 @@ namespace Univers.Aetherial
                                 t.active(original.active);
                                 t.frameX = original.frameX;
                                 t.frameY = original.frameY;
-                                TSPlayer.All.SendTileSquare(pt.X, pt.Y, 1);
+                                TSPlayer.All.SendTileSquareCentered(pt.X, pt.Y, 1);
                             }
                         }
                     }
