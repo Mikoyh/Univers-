@@ -887,28 +887,49 @@ namespace Univers.Discord
                 before = batch[batch.Count - 1]?["id"]?.ToString();
 
                 var toDelete = batch
-                    .Where(m => !protectedSet.Contains(m["author"]?["id"]?.ToString() ?? string.Empty))
+                    .Where(m =>
+                        !(m["pinned"]?.Value<bool>() ?? false) &&
+                        !protectedSet.Contains(m["author"]?["id"]?.ToString() ?? string.Empty))
                     .Select(m => m["id"]?.ToString())
                     .Where(id => !string.IsNullOrWhiteSpace(id))
                     .Select(id => id!)
                     .ToList();
 
-                if (toDelete.Count == 0) continue;
-
-                // bulk-delete per maks 100 id
-                var body = new JObject { ["messages"] = new JArray(toDelete.Cast<object>().ToArray()) };
-                using (var req = new HttpRequestMessage(HttpMethod.Post, $"{RestBaseUrl}/channels/{channelId}/messages/bulk-delete")
+                if (toDelete.Count == 1)
                 {
-                    Content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json")
-                })
+                    await DeleteMessageAsync(channelId, toDelete[0]);
+                    totalDeleted++;
+                }
+                else if (toDelete.Count >= 2)
                 {
-                    using var resp = await _http.SendAsync(req, ct);
-                    if (resp.StatusCode == (HttpStatusCode)429) { await HandleRateLimitAsync(resp, ct); }
-                    totalDeleted += toDelete.Count;
+                    // bulk-delete per maks 100 id (Discord REST API mewajibkan minimal 2 ID)
+                    var body = new JObject { ["messages"] = new JArray(toDelete.Cast<object>().ToArray()) };
+                    string json = body.ToString(Formatting.None);
+                    using (var req = new HttpRequestMessage(HttpMethod.Post, $"{RestBaseUrl}/channels/{channelId}/messages/bulk-delete")
+                    {
+                        Content = new StringContent(json, Encoding.UTF8, "application/json")
+                    })
+                    {
+                        using var resp = await _http.SendAsync(req, ct);
+                        if ((int)resp.StatusCode == 429)
+                        {
+                            await HandleRateLimitAsync(resp, ct);
+                            using var retryReq = new HttpRequestMessage(HttpMethod.Post, $"{RestBaseUrl}/channels/{channelId}/messages/bulk-delete")
+                            {
+                                Content = new StringContent(json, Encoding.UTF8, "application/json")
+                            };
+                            using var retryResp = await _http.SendAsync(retryReq, ct);
+                            if (retryResp.IsSuccessStatusCode) totalDeleted += toDelete.Count;
+                        }
+                        else if (resp.IsSuccessStatusCode)
+                        {
+                            totalDeleted += toDelete.Count;
+                        }
+                    }
                 }
 
-                await Task.Delay(600, ct);
                 if (batch.Count < 100) break;
+                await Task.Delay(600, ct);
             }
 
             return totalDeleted;

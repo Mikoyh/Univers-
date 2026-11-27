@@ -791,7 +791,7 @@ namespace Univers.Discord
             return worldId;
         }
 
-        public static void NotifyExternalEventFromChild(string worldId, string message)
+        public static void NotifyExternalEventFromChild(string worldId, string message, string eventKind = "event")
         {
             if (!_initialized || !Config.Enabled) return;
             if (MultiWorldModule.IsChildProcess) return;
@@ -801,7 +801,8 @@ namespace Univers.Discord
             clean = StripWorldAndServerTags(clean);
             if (!string.IsNullOrWhiteSpace(clean))
             {
-                EnqueueRelayPost(worldId, clean);
+                bool useEmbed = !string.Equals(eventKind, "plain", StringComparison.OrdinalIgnoreCase);
+                EnqueueRelayPost(worldId, clean, useEmbed: useEmbed);
             }
         }
 
@@ -1663,7 +1664,7 @@ namespace Univers.Discord
                 string? want = Config.WorldRoleIds.TryGetValue(worldId, out var wr) ? wr : null;
                 if (string.IsNullOrWhiteSpace(want))
                 {
-                    TShock.Log.ConsoleWarn($"[Univers.Discord] World role '{worldId}' belum terpetakan (WorldRoleIds kosong utk key ini) — sync world role DILEWATI. Jalankan '/discord roles refresh'.");
+                    TShock.Log.ConsoleWarn($"[Univers.Discord] World role '{worldId}' belum terpetakan (WorldRoleIds kosong utk key ini) - sync world role DILEWATI. Jalankan '/discord roles refresh'.");
                 }
                 foreach (var rid in allWorldRoles)
                 {
@@ -1733,9 +1734,13 @@ namespace Univers.Discord
                     {
                         string accName = pName;
                         var localPlayer = TShock.Players.FirstOrDefault(p =>
-                            p != null && p.Active && p.IsLoggedIn && p.Account != null &&
-                            (p.Name.Equals(pName, StringComparison.OrdinalIgnoreCase) || p.Account.Name.Equals(pName, StringComparison.OrdinalIgnoreCase)));
-                        if (localPlayer?.Account != null) accName = localPlayer.Account.Name;
+                        {
+                            var acc = p?.Account;
+                            return p != null && p.Active && p.IsLoggedIn && acc != null &&
+                                (p.Name.Equals(pName, StringComparison.OrdinalIgnoreCase) || acc.Name.Equals(pName, StringComparison.OrdinalIgnoreCase));
+                        });
+                        var localAcc = localPlayer?.Account;
+                        if (localAcc != null) accName = localAcc.Name;
 
                         if (!syncedAccounts.Add(accName)) continue;
 
@@ -1751,10 +1756,11 @@ namespace Univers.Discord
 
             foreach (var player in TShock.Players)
             {
-                if (player == null || !player.Active || !player.IsLoggedIn || player.Account == null) continue;
-                if (!syncedAccounts.Add(player.Account.Name)) continue;
+                var acc = player?.Account;
+                if (player == null || !player.Active || !player.IsLoggedIn || acc == null) continue;
+                if (!syncedAccounts.Add(acc.Name)) continue;
 
-                var link = Database.GetByAccount(player.Account.Name);
+                var link = Database.GetByAccount(acc.Name);
                 if (link == null || !link.IsVerified) continue;
 
                 try { await SyncRolesForAccountAsync(guildId, link.DiscordUserId, link.AccountName, MultiWorldModule.CurrentWorldId); }
@@ -1780,12 +1786,19 @@ namespace Univers.Discord
             {
                 foreach (var p in TShock.Players)
                 {
-                    if (p != null && p.Active && p.IsLoggedIn && p.Account != null &&
-                        p.Account.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase))
+                    var acc = p?.Account;
+                    if (p != null && p.Active && p.IsLoggedIn && acc != null &&
+                        acc.Name.Equals(accountName, StringComparison.OrdinalIgnoreCase))
                     {
                         string el = AetherialApi.GetPlayerElement(p);
                         return string.IsNullOrWhiteSpace(el) ? null : el.ToUpperInvariant();
                     }
+                }
+
+                var profile = AetherialModule.Database?.GetOrCreateProfile(accountName);
+                if (profile != null && !string.IsNullOrWhiteSpace(profile.AssignedElement))
+                {
+                    return profile.AssignedElement.ToUpperInvariant();
                 }
             }
             catch { }

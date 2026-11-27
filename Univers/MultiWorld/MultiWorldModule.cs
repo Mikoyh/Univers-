@@ -48,6 +48,8 @@ namespace Univers.MultiWorld
         private static string _multiWorldRoot = string.Empty;
         private static System.Timers.Timer? _heartbeatTimer;
         private static bool _initialized = false;
+        private static volatile bool _disposedOnce = false;
+        private static int _mainThreadId = -1;
         private static bool _processExitHooked = false;
         private static int _effectiveMasterHubPort = 0;
         private static int _takenOverPublicPort = 0;
@@ -80,6 +82,7 @@ namespace Univers.MultiWorld
         private static readonly ConcurrentDictionary<int, byte> _dirtySscSlots = new();
         private static readonly ConcurrentDictionary<int, byte> _preSyncedJoinSlots = new();
         private static readonly ConcurrentDictionary<int, TrackedSlotPlayer> _trackedSlotPlayers = new();
+        private static readonly object _directMasterDbSyncLock = new();
         private static Terraria.Player? _scratchSyncPlayer;
 
         private static void TrackSlotPlayer(TSPlayer? player)
@@ -154,6 +157,8 @@ namespace Univers.MultiWorld
         public static void Initialize(string tshockSavePath)
         {
             if (_initialized) return;
+            _disposedOnce = false;
+            _mainThreadId = Environment.CurrentManagedThreadId;
 
             string? childEnv = Environment.GetEnvironmentVariable("UNIVERS_CHILD_WORLD");
             IsChildProcess = !string.IsNullOrWhiteSpace(childEnv);
@@ -192,7 +197,12 @@ namespace Univers.MultiWorld
             if (!_processExitHooked)
             {
                 _processExitHooked = true;
-                AppDomain.CurrentDomain.ProcessExit += (_, _) => SaveAllActivePlayersSscSync();
+                AppDomain.CurrentDomain.ProcessExit += (_, _) => FlushAllSscBeforeShutdown(fromConsoleThread: true);
+                try
+                {
+                    Console.CancelKeyPress += (_, _) => FlushAllSscBeforeShutdown(fromConsoleThread: true);
+                }
+                catch { }
             }
 
             MultiWorldCommands.Register();
@@ -614,8 +624,14 @@ namespace Univers.MultiWorld
         public static void Dispose()
         {
             if (!_initialized) return;
+
+            if (!IsChildProcess)
+            {
+                FlushAllRunningChildrenSscSync();
+            }
             SaveAllActivePlayersSscSync();
             _initialized = false;
+            _disposedOnce = true;
 
             try { _heartbeatTimer?.Stop(); _heartbeatTimer?.Dispose(); } catch { }
 
@@ -636,10 +652,95 @@ namespace Univers.MultiWorld
 
             try { Proxy?.Dispose(); } catch { }
             try { ChildPushServer?.Dispose(); } catch { }
+            try { ProcessManager?.ShutdownAll(DrainMainThreadQueue); } catch { }
             try { ProcessManager?.Dispose(); } catch { }
             try { IpcServer?.Dispose(); } catch { }
             try { TicketStore?.Dispose(); } catch { }
             try { SscStore?.Dispose(); } catch { }
+        }
+
+        private static void DrainMainThreadQueue()
+        {
+            int count = 0;
+            while (count < 64 && _mainThreadQueue.TryDequeue(out var act))
+            {
+                count++;
+                try { act(); } catch { }
+            }
+        }
+
+        private static void FlushAllRunningChildrenSscSync()
+        {
+            if (IsChildProcess || ProcessManager == null) return;
+            try
+            {
+                var targets = ProcessManager.GetRunningCallbackTargets(null);
+                if (targets.Count == 0) return;
+
+                var task = Task.WhenAll(targets.Select(t => MultiWorldIpcClient.SendAsync(t.CallbackPort, new IpcRequest
+                {
+                    Action = "flush_ssc",
+                    WorldId = t.WorldId
+                }, timeoutMs: 3500)));
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (!task.IsCompleted && sw.ElapsedMilliseconds < 4000)
+                {
+                    DrainMainThreadQueue();
+                    System.Threading.Thread.Sleep(50);
+                }
+                DrainMainThreadQueue();
+            }
+            catch { }
+        }
+
+        private static bool IsServerShutdownCommand(string cmdName)
+        {
+            if (string.IsNullOrWhiteSpace(cmdName)) return false;
+            return cmdName == "exit" ||
+                   cmdName == "exit-nosave" ||
+                   cmdName == "off" ||
+                   cmdName == "off-nosave" ||
+                   cmdName == "stop" ||
+                   cmdName == "shutdown" ||
+                   cmdName == "restart";
+        }
+
+        private static void FlushAllSscBeforeShutdown(bool fromConsoleThread)
+        {
+            if (_disposedOnce || !_initialized) return;
+            try
+            {
+                if (!IsChildProcess)
+                {
+                    FlushAllRunningChildrenSscSync();
+                }
+
+                bool onMainThread = _mainThreadId > 0 && Environment.CurrentManagedThreadId == _mainThreadId;
+                if (fromConsoleThread && !onMainThread && _initialized)
+                {
+                    using var done = new System.Threading.ManualResetEventSlim(false);
+                    _mainThreadQueue.Enqueue(() =>
+                    {
+                        try { SaveAllActivePlayersSscSync(); }
+                        finally { done.Set(); }
+                    });
+                    if (!done.Wait(1200))
+                    {
+                        SaveAllActivePlayersSscSync();
+                    }
+                }
+                else
+                {
+                    SaveAllActivePlayersSscSync();
+                }
+
+                if (!IsChildProcess)
+                {
+                    DrainMainThreadQueue();
+                }
+            }
+            catch { }
         }
 
         public static void Reload()
@@ -759,11 +860,12 @@ namespace Univers.MultiWorld
          return MultiWorldIpcClient.SendAsync(MasterIpcPort, req, timeoutMs: 4000);
      }
 
-     public static Task<IpcResponse> SendChildEventToDiscordAsync(string worldId, string message)
+     public static Task<IpcResponse> SendChildEventToDiscordAsync(string worldId, string message, string eventKind = "event")
      {
          return MultiWorldIpcClient.SendAsync(MasterIpcPort, new IpcRequest
          {
              Action = "discord_event",
+             AdminSubAction = eventKind,
              WorldId = worldId,
              FormattedMessage = message
          }, timeoutMs: 2500);
@@ -873,7 +975,7 @@ namespace Univers.MultiWorld
                 _mainThreadQueue.Enqueue(() =>
                 {
                     target.GiveItem(item.type, stack);
-                    target.SendSuccessMessage($"[c/38bdf8:[SERVER]] Kamu menerima {stack}x {item.Name}!");
+                    target.SendSuccessMessage($"Kamu menerima {stack}x {item.Name}!");
                 });
                 return Task.FromResult(new IpcResponse { Success = true, Message = $"Berhasil memberikan {stack}x {item.Name} kepada {target.Name} di '{CurrentWorldId}'." });
             }
@@ -894,7 +996,27 @@ namespace Univers.MultiWorld
                 });
                 return Task.FromResult(new IpcResponse { Success = true, Message = $"Perintah '{req.FormattedMessage}' dieksekusi di '{CurrentWorldId}'." });
             }
+            else if (req.Action == "flush_ssc")
+            {
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _mainThreadQueue.Enqueue(() =>
+                {
+                    try { SaveAllActivePlayersSscSync(); }
+                    finally { tcs.TrySetResult(true); }
+                });
+                return FlushSscOnChildAsync(tcs);
+            }
             return Task.FromResult(new IpcResponse { Success = true });
+        }
+
+        private static async Task<IpcResponse> FlushSscOnChildAsync(TaskCompletionSource<bool> tcs)
+        {
+            var finished = await Task.WhenAny(tcs.Task, Task.Delay(1500));
+            if (finished != tcs.Task)
+            {
+                try { SaveAllActivePlayersSscSync(); } catch { }
+            }
+            return new IpcResponse { Success = true };
         }
 
         private static string EnsureCommandSpecifier(string? command)
@@ -1328,6 +1450,7 @@ namespace Univers.MultiWorld
 
         private static void OnGameUpdate(EventArgs args)
         {
+            _mainThreadId = Environment.CurrentManagedThreadId;
             int processed = 0;
             while (processed < 32 && _mainThreadQueue.TryDequeue(out var action))
             {
@@ -1743,7 +1866,11 @@ namespace Univers.MultiWorld
             {
                 return;
             }
-            if (!synchronousIpc && (_pendingSscRestores.ContainsKey(effectiveName) || IsSscRestoreGuarded(effectiveName)))
+            if (_pendingSscRestores.ContainsKey(effectiveName))
+            {
+                return;
+            }
+            if (!synchronousIpc && IsSscRestoreGuarded(effectiveName))
             {
                 return;
             }
@@ -1771,7 +1898,18 @@ namespace Univers.MultiWorld
                 return;
             }
 
+            string accNameHint = player.Account.Name;
             string json = SerializePlayerSscSnapshot(player, forceLoggedIn: isLoggedIn, accountNameHint: accountNameHint, playerNameHint: effectiveName);
+            bool usedCachedFallback = false;
+            if (!player.Active &&
+                _lastSavedSscJson.TryGetValue(accNameHint, out var prevCachedJson) &&
+                !string.IsNullOrWhiteSpace(prevCachedJson) &&
+                LooksLikeResetBlankPlayer(player.TPlayer))
+            {
+                // Slot player sudah di-reset menjadi karakter kosong oleh Netplay saat disconnect/exit; pakai snapshot valid terakhir!
+                json = prevCachedJson;
+                usedCachedFallback = true;
+            }
             if (string.IsNullOrWhiteSpace(json)) return;
 
             string accName = player.Account?.Name ?? (!string.IsNullOrWhiteSpace(accountNameHint) ? accountNameHint : effectiveName);
@@ -1792,7 +1930,21 @@ namespace Univers.MultiWorld
 
                 try
                 {
-                    if (player.Account != null && player.Account.ID > 0)
+                    bool canWriteLocalDb = true;
+                    if (usedCachedFallback)
+                    {
+                        var fallbackSnap = JsonConvert.DeserializeObject<TransferSscSnapshot>(json);
+                        if (fallbackSnap != null)
+                        {
+                            ApplySnapshotToTerrariaPlayer(player.TPlayer, fallbackSnap);
+                        }
+                        else
+                        {
+                            canWriteLocalDb = false;
+                        }
+                    }
+
+                    if (canWriteLocalDb && player.Account != null && player.Account.ID > 0)
                     {
                         player.PlayerData ??= GetPlayerDataWithRetry(player, player.Account.ID);
                         if (player.PlayerData != null)
@@ -1883,6 +2035,29 @@ namespace Univers.MultiWorld
                     }, TaskScheduler.Default);
                 }
             }
+        }
+
+        private static bool LooksLikeResetBlankPlayer(Terraria.Player? tp)
+        {
+            if (tp == null) return true;
+            if (tp.statLifeMax != 100 || tp.statManaMax != 20) return false;
+            if (tp.inventory != null)
+            {
+                for (int i = 0; i < tp.inventory.Length; i++)
+                {
+                    var it = tp.inventory[i];
+                    if (it != null && !it.IsAir && it.type > 0 && it.stack > 0) return false;
+                }
+            }
+            if (tp.armor != null)
+            {
+                for (int i = 0; i < tp.armor.Length; i++)
+                {
+                    var it = tp.armor[i];
+                    if (it != null && !it.IsAir && it.type > 0 && it.stack > 0) return false;
+                }
+            }
+            return true;
         }
 
         private static void SaveAllActivePlayersSscSync()
@@ -2255,6 +2430,16 @@ namespace Univers.MultiWorld
                 return Task.FromResult(false);
             }
 
+            if (!_initialized)
+            {
+                bool directOk = false;
+                lock (_directMasterDbSyncLock)
+                {
+                    directOk = SyncSscJsonToMasterCharacterDbImmediate(accountName, playerName, sscJson, forceOnlineRefresh: false);
+                }
+                return Task.FromResult(directOk);
+            }
+
             var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             _mainThreadQueue.Enqueue(() =>
@@ -2262,7 +2447,10 @@ namespace Univers.MultiWorld
                 bool ok = false;
                 try
                 {
-                    ok = SyncSscJsonToMasterCharacterDbImmediate(accountName, playerName, sscJson, forceOnlineRefresh);
+                    lock (_directMasterDbSyncLock)
+                    {
+                        ok = SyncSscJsonToMasterCharacterDbImmediate(accountName, playerName, sscJson, forceOnlineRefresh);
+                    }
                 }
                 finally
                 {
@@ -3018,7 +3206,7 @@ namespace Univers.MultiWorld
 
                          SscStore?.Save(req.AccountName, req.PlayerName, req.WorldId, req.SscSnapshotJson, markLeaveSynced: isLeaveSync);
                          var syncTask = SyncSscJsonToMasterCharacterDbAsync(req.AccountName, req.PlayerName, req.SscSnapshotJson, forceOnlineRefresh: isLeaveSync);
-                         if (isLeaveSync && _initialized)
+                         if (isLeaveSync)
                          {
                              await Task.WhenAny(syncTask, Task.Delay(2000));
                          }
@@ -3055,7 +3243,7 @@ namespace Univers.MultiWorld
                              _mainThreadQueue.Enqueue(() =>
                              {
                                  target.GiveItem(item.type, stack);
-                                 target.SendSuccessMessage($"[c/38bdf8:[SERVER]] Kamu menerima {stack}x {item.Name}!");
+                                 target.SendSuccessMessage($"Kamu menerima {stack}x {item.Name}!");
                              });
                              return new IpcResponse { Success = true, Message = $"Berhasil memberikan {stack}x {item.Name} kepada {target.Name} di Hub." };
                          }
@@ -3155,7 +3343,7 @@ namespace Univers.MultiWorld
                             req.FormattedMessage);
 
                     case "discord_event":
-                        DiscordModule.NotifyExternalEventFromChild(req.WorldId, req.FormattedMessage);
+                        DiscordModule.NotifyExternalEventFromChild(req.WorldId, req.FormattedMessage, req.AdminSubAction);
                         return new IpcResponse { Success = true };
 
                     case "claim_ticket":
@@ -3426,6 +3614,12 @@ namespace Univers.MultiWorld
             if (cmdName.StartsWith("/")) cmdName = cmdName.Substring(1);
             cmdName = cmdName.ToLowerInvariant();
 
+            if (IsServerShutdownCommand(cmdName))
+            {
+                FlushAllSscBeforeShutdown(fromConsoleThread: true);
+                return;
+            }
+
             if (cmdName == "broadcast" || cmdName == "bc")
             {
                 if (!string.IsNullOrEmpty(remainder))
@@ -3453,7 +3647,7 @@ namespace Univers.MultiWorld
             {
                 if (!string.IsNullOrEmpty(remainder))
                 {
-                    string sayMsg = $"[c/38bdf8:[SERVER]] {remainder}";
+                    string sayMsg = $"[c/38bdf8:{remainder}]";
                     BroadcastLocalFormatted(sayMsg, new Color(56, 189, 248));
                     TShock.Log.ConsoleInfo(StripTerrariaColorTags(sayMsg));
                     if (!IsChildProcess)
@@ -3513,6 +3707,16 @@ namespace Univers.MultiWorld
         {
             if (args.Handled || args.Player == null || !args.Player.RealPlayer) return;
             string cmd = args.CommandName?.ToLowerInvariant() ?? string.Empty;
+
+            if (IsServerShutdownCommand(cmd))
+            {
+                var shutdownCmd = Commands.ChatCommands.FirstOrDefault(c => c.HasAlias(cmd));
+                if (shutdownCmd != null && shutdownCmd.CanRun(args.Player))
+                {
+                    FlushAllSscBeforeShutdown(fromConsoleThread: false);
+                }
+                return;
+            }
 
             if (cmd == "broadcast" || cmd == "bc")
             {
@@ -3793,7 +3997,7 @@ namespace Univers.MultiWorld
                         _mainThreadQueue.Enqueue(() =>
                         {
                             hubPlayer.GiveItem(item.type, stack);
-                            hubPlayer.SendSuccessMessage($"[c/38bdf8:[SERVER]] Kamu menerima {stack}x {item.Name}!");
+                            hubPlayer.SendSuccessMessage($"Kamu menerima {stack}x {item.Name}!");
                         });
                         executor.SendSuccessMessage($"[MultiWorld] Berhasil memberikan {stack}x {item.Name} kepada {hubPlayer.Name} di Hub.");
                         return;

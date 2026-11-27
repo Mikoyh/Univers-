@@ -112,20 +112,30 @@ namespace Univers.Aetherial
             var profile = Database.GetOrCreateProfile(accountName);
             if (profile == null) return;
 
+            int oldLevel = Math.Max(1, profile.ElementLevel);
             int clamped = Math.Clamp(newLevel, 1, 1000);
+            int oldTier = GetTierStatsForLevel(oldLevel).TierNumber;
+            var newTierStats = GetTierStatsForLevel(clamped);
+
             if (profile.ElementLevel != clamped)
             {
                 profile.ElementLevel = clamped;
                 Database.SaveProfile(profile);
             }
 
+            if (isAdminSet || string.IsNullOrEmpty(profile.AssignedElement) || newTierStats.TierNumber <= oldTier)
+                return;
+
             var player = TShock.Players.FirstOrDefault(p =>
                 p != null && p.Active && p.IsLoggedIn &&
                 string.Equals(p.Account?.Name, accountName, StringComparison.OrdinalIgnoreCase));
 
-            if (player != null && !isAdminSet)
+            if (player != null)
             {
-                player.SendInfoMessage($"[ INFO ] Resonansi Elemen jiwamu meningkat selaras dengan Level Karakter (Lv. {clamped})!");
+                string elemName = profile.AssignedElement.ToUpperInvariant();
+                string elemHex = GetElementProfile(elemName)?.HexColor ?? "f59e0b";
+                player.SendSuccessMessage(
+                    $"[ AETHERIAL ] Elemen [c/{elemHex}:{elemName}] naik ke [c/{newTierStats.TierColor}:Tier {newTierStats.TierNumber} / 7]! (Proc: {newTierStats.TagProcChance}%, Synergy: +{newTierStats.WeaponSynergyBonusPercent}%)");
             }
         }
 
@@ -289,7 +299,7 @@ namespace Univers.Aetherial
                     if (omniaMod != null)
                         omniaMod.OnTagVisual(attacker, targetNpc, 7);
                     else
-                        TriggerElementalTagVisualProjectile(targetNpc, playerElement, 7, attacker.TPlayer.Center);
+                        TriggerElementalTagVisualProjectile(targetNpc, playerElement, 7, attacker.TPlayer.Center, attacker.Index);
 
                     ExecuteElementalReaction(attacker, targetNpc, "NONE", playerElement, ref args);
                     return;
@@ -331,7 +341,7 @@ namespace Univers.Aetherial
                     }
                     else if (tierStats.VisualStage >= 2)
                     {
-                        TriggerElementalTagVisualProjectile(targetNpc, playerElement, 1, attacker.TPlayer.Center);
+                        TriggerElementalTagVisualProjectile(targetNpc, playerElement, 1, attacker.TPlayer.Center, attacker.Index);
                     }
                 }
             }
@@ -533,13 +543,13 @@ namespace Univers.Aetherial
             {
                 var modA = GetElementProfile(tagA);
                 if (modA != null) modA.OnComboVisual(attacker, target, attackerTier);
-                else TriggerElementalTagVisualProjectile(target, tagA, attackerTier, attacker.TPlayer.Center);
+                else TriggerElementalTagVisualProjectile(target, tagA, attackerTier, attacker.TPlayer.Center, attacker.Index);
             }
             if (tagB != "NONE" && tagB != tagA)
             {
                 var modB = GetElementProfile(tagB);
                 if (modB != null) modB.OnComboVisual(attacker, target, attackerTier);
-                else TriggerElementalTagVisualProjectile(target, tagB, attackerTier, attacker.TPlayer.Center);
+                else TriggerElementalTagVisualProjectile(target, tagB, attackerTier, attacker.TPlayer.Center, attacker.Index);
             }
 
             AetherialApi.InvokeReaction(attacker, target, reactionName, args.Damage);
@@ -612,13 +622,19 @@ namespace Univers.Aetherial
                 "TORRENT" => new[] { 22, 405, 409, 1135 },
                 "VOLT" => new[] { 121, 496, 617, 634 },
                 "BRAMBLE" => new[] { 206, 513, 228, 1038 },
-                "RADIANCE" => new[] { 92, 122, 923, 873 },
+                "RADIANCE" => new[]
+                {
+                    ProjectileID.FallingStar,
+                    ProjectileID.ScutlixLaserFriendly,
+                    ProjectileID.Excalibur,
+                    ProjectileID.FairyQueenSunDance
+                },
                 "OMNIA" => new[] { 573, 645, 619, 933 },
                 _ => Array.Empty<int>()
             };
         }
 
-        private static void TriggerElementalTagVisualProjectile(NPC target, string element, int tierNumber, Vector2? attackerPos = null)
+        private static void TriggerElementalTagVisualProjectile(NPC target, string element, int tierNumber, Vector2? attackerPos = null, int ownerIndex = -1)
         {
             if (target == null || !target.active) return;
 
@@ -648,26 +664,10 @@ namespace Univers.Aetherial
                 int projectileId = projPool[layer];
                 float spreadAngle = (layer - (maxLayer / 2f)) * 0.35f;
                 Vector2 finalDir = aimDir.RotatedBy(spreadAngle);
-                Vector2 velocity = finalDir * (4.5f + layer * 1.2f);
+                Vector2 velocity = finalDir * (6.5f + layer * 1.5f);
                 Vector2 spawnPos = target.Center - (finalDir * 24f);
 
-                int projIndex = Projectile.NewProjectile(
-                    Projectile.GetNoneSource(),
-                    spawnPos,
-                    velocity,
-                    projectileId,
-                    0,
-                    0f,
-                    Main.myPlayer
-                );
-
-                if (projIndex >= 0 && projIndex < Main.maxProjectiles)
-                {
-                    Main.projectile[projIndex].direction = finalDir.X >= 0 ? 1 : -1;
-                    Main.projectile[projIndex].spriteDirection = Main.projectile[projIndex].direction;
-                    Main.projectile[projIndex].timeLeft = 28;
-                    NetMessage.SendData((int)PacketTypes.ProjectileNew, -1, -1, null, projIndex);
-                }
+                Elements.ElementVisualHelper.SpawnVisualProjectile(spawnPos, velocity, projectileId, 28, ownerIndex);
             }
         }
 

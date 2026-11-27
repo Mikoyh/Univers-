@@ -1,22 +1,23 @@
 # AI Studio preview & workspace support files
-metadata.json
-package.json
-package-lock.json
-server.js
 node_modules/
-public/
-.aistudio/
+dist/
 .vite/
+.aistudio/
+public/
 
-# .NET build artifacts & local PC config
+# .NET build artifacts & binaries
 bin/
 obj/
 .vs/
 *.user
+*.dll
+*.pdb
+*.cache
+*.db
+
+# Univers runtime data & logs
 Univers/bin/
 Univers/obj/
-Univers/tshock_path.txt
-Univers/tshock_world.txt
 Univers/tshock/
 Univers/ServerLog.txt
-
+*.db

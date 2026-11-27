@@ -507,6 +507,18 @@ namespace Univers.MultiWorld
                 }
 
                 rt.State = WorldRuntimeState.Stopping;
+                if (rt.CallbackPort > 0)
+                {
+                    try
+                    {
+                        await MultiWorldIpcClient.SendAsync(rt.CallbackPort, new IpcRequest
+                        {
+                            Action = "flush_ssc",
+                            WorldId = def.Id
+                        }, timeoutMs: 2500);
+                    }
+                    catch { }
+                }
                 try
                 {
                     await rt.Process.StandardInput.WriteLineAsync("exit");
@@ -725,7 +737,7 @@ namespace Univers.MultiWorld
             }
         }
 
-        public void ShutdownAll()
+        public void ShutdownAll(Action? onWaitTick = null)
         {
             if (_disposed) return;
             _disposed = true;
@@ -748,11 +760,14 @@ namespace Univers.MultiWorld
             }
 
             var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < 7000)
+            while (sw.ElapsedMilliseconds < 12000)
             {
+                try { onWaitTick?.Invoke(); } catch { }
                 if (running.All(c => c.Process == null || c.Process.HasExited)) break;
-                Thread.Sleep(200);
+                Thread.Sleep(150);
             }
+
+            try { onWaitTick?.Invoke(); } catch { }
 
             foreach (var child in running)
             {
@@ -769,7 +784,7 @@ namespace Univers.MultiWorld
 
         public void Dispose()
         {
-            ShutdownAll();
+            ShutdownAll(null);
             try { _configLock.Dispose(); } catch { }
         }
 

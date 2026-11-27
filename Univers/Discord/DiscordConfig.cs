@@ -48,13 +48,13 @@ namespace Univers.Discord
         // ID User Discord (punya lu / admin) yang chat-nya TIDAK boleh ikut terhapus saat sweep.
         public List<string> ProtectUserIds { get; set; } = new();
 
-        // ID Role Discord (mis. role Owner/Admin) — SEMUA member ber-role ini chat-nya diamankan saat sweep.
+        // ID Role Discord (mis. role Owner/Admin) - SEMUA member ber-role ini chat-nya diamankan saat sweep.
         // Cocok kalau lu & partner punya role sama. Boleh isi beberapa role sekaligus.
         public List<string> ProtectRoleIds { get; set; } = new();
 
         // AUTO-SYNC ROLE RANK & ELEMENT KE DISCORD
         // Bot otomatis bikin role (jika belum ada) & menyimpan ID-nya di RankRoleIds / ElementRoleIds.
-        // Role cukup dibuat sekali; setelah itu lu bebas rename / pindah posisi role — ID tetap sama.
+        // Role cukup dibuat sekali; setelah itu lu bebas rename / pindah posisi role - ID tetap sama.
         public bool SyncRankRoles { get; set; } = false;
         public bool SyncElementRoles { get; set; } = false;
         public bool SyncWorldRoles { get; set; } = false;

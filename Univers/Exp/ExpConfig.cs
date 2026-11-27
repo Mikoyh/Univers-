@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using Newtonsoft.Json;
+using Terraria.ID;
 using TShockAPI;
 using Univers.Modules;
 
@@ -54,12 +55,12 @@ namespace Univers.Exp
         [JsonProperty("Level Badge Tiers")]
         public Dictionary<int, LevelBadgeConfig> BadgeTiers { get; set; } = new Dictionary<int, LevelBadgeConfig>
         {
-            { 1, new LevelBadgeConfig { BadgeItemId = 3507, HexColor = "94a3b8", Title = "Copper Broadsword (Lv.1-99)" } },
-            { 100, new LevelBadgeConfig { BadgeItemId = 273, HexColor = "a855f7", Title = "Night's Edge (Lv.100-249)" } },
-            { 250, new LevelBadgeConfig { BadgeItemId = 757, HexColor = "22c55e", Title = "Terra Blade (Lv.250-499)" } },
-            { 500, new LevelBadgeConfig { BadgeItemId = 3456, HexColor = "f59e0b", Title = "Solar Fragment (Lv.500-749)" } },
-            { 750, new LevelBadgeConfig { BadgeItemId = 3063, HexColor = "ec4899", Title = "Meowmere (Lv.750-949)" } },
-            { 950, new LevelBadgeConfig { BadgeItemId = 4956, HexColor = "06b6d4", Title = "Zenith Apex (Lv.950-1000)" } }
+            { 1, new LevelBadgeConfig { BadgeItemId = ItemID.CopperShortsword, HexColor = "94a3b8", Title = "Copper Shortsword (Lv.1-99)" } },
+            { 100, new LevelBadgeConfig { BadgeItemId = ItemID.NightsEdge, HexColor = "a855f7", Title = "Night's Edge (Lv.100-249)" } },
+            { 250, new LevelBadgeConfig { BadgeItemId = ItemID.TerraBlade, HexColor = "22c55e", Title = "Terra Blade (Lv.250-499)" } },
+            { 500, new LevelBadgeConfig { BadgeItemId = ItemID.SolarEruption, HexColor = "f59e0b", Title = "Solar Eruption (Lv.500-749)" } },
+            { 750, new LevelBadgeConfig { BadgeItemId = ItemID.Meowmere, HexColor = "ec4899", Title = "Meowmere (Lv.750-949)" } },
+            { 950, new LevelBadgeConfig { BadgeItemId = ItemID.Zenith, HexColor = "06b6d4", Title = "Zenith Apex (Lv.950-1000)" } }
         };
 
         public long CalculateRequiredExp(int level)
@@ -95,7 +96,7 @@ namespace Univers.Exp
 
         public int GetBadgeIdForLevel(int level)
         {
-            int selected = 3507;
+            int selected = ItemID.CopperShortsword;
             foreach (var kvp in BadgeTiers)
             {
                 if (level >= kvp.Key) selected = kvp.Value.BadgeItemId;
@@ -162,6 +163,15 @@ namespace Univers.Exp
                     loaded.MobExpMin = def.MobExpMin;
                     loaded.MobExpMax = def.MobExpMax;
                     loaded.BossExpMultiplier = def.BossExpMultiplier;
+                    changed = true;
+                }
+
+                if (loaded.BadgeTiers != null &&
+                    loaded.BadgeTiers.TryGetValue(500, out var tier500) &&
+                    (tier500.BadgeItemId == 3456 || tier500.BadgeItemId == ItemID.FragmentSolar))
+                {
+                    tier500.BadgeItemId = ItemID.SolarEruption;
+                    tier500.Title = "Solar Eruption (Lv.500-749)";
                     changed = true;
                 }
 
