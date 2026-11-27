@@ -169,11 +169,11 @@ namespace Univers.Aetherial.Elements
             }
         }
 
-        // [DOMAIN EXPANSION - KHUSUS IGNIS TEST]: Ryoiki Tenkai: CRIMSON HELLFIRE
+        // [DOMAIN EXPANSION - JOGO VOLCANIC MAGMA VIBE]: Ryoiki Tenkai: CRIMSON HELLFIRE
         public bool SupportsDomainExpansion => true;
         public string DomainName => "CRIMSON HELLFIRE";
 
-        public static float GetDomainRadius(int tier) => 175f + (Math.Clamp(tier, 1, 7) * 35f);
+        public static float GetDomainRadius(int tier) => 190f + (Math.Clamp(tier, 1, 7) * 40f);
 
         public void OnDomainActivate(TSPlayer owner, Vector2 center, int tier)
         {
@@ -181,31 +181,36 @@ namespace Univers.Aetherial.Elements
 
             int ownerIdx = owner.Index;
             float radius = GetDomainRadius(tier);
-            int perimeterCount = Math.Min(12, 6 + tier);
 
-            // Cincin pembuka di batas arena Domain
-            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.SolarFlareRay, perimeterCount, radius * 0.85f, 34, 3.5f, ownerIdx);
-            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.SolarWhipSwordExplosion, 30, ownerIdx);
+            // 1. Dinding Magma Keliling Gila-gilaan (Multi-layer boundary ring)
+            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.SolarFlareRay, 12, radius * 0.9f, 40, 4f, ownerIdx, scale: 1.3f);
+            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.DD2BetsyFireball, 8, radius * 0.75f, 38, 3.5f, ownerIdx, scale: 1.2f);
 
-            if (tier >= 3)
-            {
-                ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 30, ownerIdx);
-                ElementVisualHelper.SpawnMagicRitualRing(
-                    center,
-                    ownerIdx,
-                    ProjectileID.SolarFlareRay,
-                    ProjectileID.EyeBeam,
-                    ProjectileID.SolarWhipSwordExplosion,
-                    radius: Math.Min(90f, radius * 0.35f),
-                    outerCount: 8,
-                    chordCount: 4,
-                    spinSpeed: 5.0f,
-                    timeLeft: 32);
-            }
+            // 2. Pusat Kawah Meledak (Volcano & Solar Explosion)
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 36, ownerIdx, scale: 1.5f);
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.SolarWhipSwordExplosion, 34, ownerIdx, scale: 1.4f);
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.DD2ExplosiveTrapT3Explosion, 32, ownerIdx);
 
-            owner.SetBuff(BuffID.Inferno, (6 + tier) * 60);
-            if (tier >= 4) owner.SetBuff(BuffID.Wrath, (6 + tier) * 60);
-            if (tier >= 6) owner.SetBuff(BuffID.Lifeforce, (6 + tier) * 60);
+            // 3. Magic Ritual Circle Magma Kosmik
+            ElementVisualHelper.SpawnMagicRitualRing(
+                center,
+                ownerIdx,
+                ProjectileID.SolarFlareRay,
+                ProjectileID.FairyQueenSunDance,
+                ProjectileID.StardustTowerMark,
+                radius: Math.Min(110f, radius * 0.4f),
+                outerCount: 8,
+                chordCount: 4,
+                spinSpeed: 6.0f,
+                timeLeft: 36);
+
+            // 4. Hujan Meteor Magma Awal (Volcanic Rain Burst)
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.DD2BetsyFireball, 6, radius * 1.4f, 180f, 14f, 32, ownerIdx);
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 4, radius * 1.2f, 160f, 15f, 30, ownerIdx);
+
+            owner.SetBuff(BuffID.Inferno, (8 + tier) * 60);
+            owner.SetBuff(BuffID.Wrath, (8 + tier) * 60);
+            owner.SetBuff(BuffID.Lifeforce, (8 + tier) * 60);
         }
 
         public void OnDomainPulse(TSPlayer owner, Vector2 center, int tier, int pulseIndex)
@@ -214,51 +219,63 @@ namespace Univers.Aetherial.Elements
 
             int ownerIdx = owner.Index;
             float radius = GetDomainRadius(tier);
-            float spinAngle = pulseIndex * 0.42f;
+            float spinAngle = pulseIndex * 0.55f;
 
-            // 1. Batas luar Domain berputar setiap 0.5 detik (hemat paket)
-            int edgeCount = Math.Min(10, 5 + tier);
-            int edgeProj = (pulseIndex % 2 == 0) ? ProjectileID.SolarFlareRay : ProjectileID.AmberBolt;
+            // 1. Dinding Magma Berputar Cepat di Batas Domain
+            int edgeCount = Math.Min(12, 6 + tier);
+            int edgeProj = (pulseIndex % 2 == 0) ? ProjectileID.SolarFlareRay : ProjectileID.DD2BetsyFireball;
             for (int i = 0; i < edgeCount; i++)
             {
                 float angle = spinAngle + MathHelper.TwoPi * i / edgeCount;
                 Vector2 edgePos = center + new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * radius;
-                Vector2 tangentVel = new Vector2(-(float)Math.Sin(angle), (float)Math.Cos(angle)) * 4.5f;
-                ElementVisualHelper.SpawnVisualProjectile(edgePos, tangentVel, edgeProj, 24, ownerIdx);
+                Vector2 tangentVel = new Vector2(-(float)Math.Sin(angle), (float)Math.Cos(angle)) * 5.5f;
+                ElementVisualHelper.SpawnVisualProjectile(edgePos, tangentVel, edgeProj, 26, ownerIdx);
             }
 
-            // 2. Sigil inti / letusan tengah berkala
-            if (pulseIndex % 4 == 0)
+            // 2. Lantai Kawah Meletus (Eruption from Ground)
+            for (int e = 0; e < 2; e++)
+            {
+                float randOffset = (Rnd.NextSingle() - 0.5f) * (radius * 1.3f);
+                Vector2 floorPos = new Vector2(center.X + randOffset, center.Y + 20f);
+                int floorProj = (e == 0) ? ProjectileID.DD2ExplosiveTrapT2Explosion : ElementVisualHelper.ProjVolcano144;
+                ElementVisualHelper.SpawnVisualProjectile(floorPos, new Vector2(0f, -8f), floorProj, 26, ownerIdx);
+            }
+
+            // 3. Hujan Magma Jogo (Volcanic Rain setiap pulse)
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.FlamingScythe, 2, radius * 1.1f, 150f, 13f, 26, ownerIdx);
+            if (pulseIndex % 2 == 0)
+            {
+                ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 2, radius * 1.2f, 170f, 14f, 26, ownerIdx);
+            }
+
+            // 4. Letusan Sigil Inti Berkala
+            if (pulseIndex % 3 == 0)
             {
                 ElementVisualHelper.SpawnMagicRitualRing(
                     center,
                     ownerIdx,
                     ProjectileID.SolarFlareRay,
-                    tier >= 5 ? ProjectileID.EyeBeam : 0,
+                    ProjectileID.EyeBeam,
                     ProjectileID.SolarWhipSwordExplosion,
-                    radius: Math.Min(84f, radius * 0.32f),
-                    outerCount: 6,
-                    chordCount: tier >= 5 ? 3 : 0,
-                    spinSpeed: 4.8f,
-                    timeLeft: 28,
+                    radius: Math.Min(96f, radius * 0.35f),
+                    outerCount: 8,
+                    chordCount: 4,
+                    spinSpeed: 5.5f,
+                    timeLeft: 30,
                     tryNativeCultistRitual: false,
                     angleOffset: spinAngle);
             }
-            else if (pulseIndex % 2 == 0 && tier >= 4)
-            {
-                ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 24, ownerIdx);
-            }
 
-            // 3. Refresh aura pelindung jika caster berada di dalam Domain
+            // 5. Caster Buff Maintenance
             if ((owner.TPlayer.Center - center).Length() <= radius)
             {
                 owner.SetBuff(BuffID.Inferno, 180);
                 owner.SetBuff(BuffID.Campfire, 180);
             }
 
-            // 4. Bakar & bombardir maksimal 4 musuh aktif di dalam area Domain
+            // 6. Siksa Musuh di dalam Domain (Magma Burn & Volcanic Strike)
             int hitCount = 0;
-            int pulseDamage = 25 + (tier * 28);
+            int pulseDamage = 35 + (tier * 35);
             int debuffId = GetMobDebuffId(tier);
 
             foreach (var npc in Main.npc)
@@ -266,26 +283,27 @@ namespace Univers.Aetherial.Elements
                 if (npc == null || !npc.active || npc.friendly || npc.lifeMax <= 5 || npc.dontTakeDamage) continue;
                 if ((npc.Center - center).Length() > radius) continue;
 
-                npc.AddBuff(debuffId, 240);
-                if (tier >= 5) npc.AddBuff(BuffID.OnFire3, 240);
+                npc.AddBuff(debuffId, 280);
+                npc.AddBuff(BuffID.OnFire3, 280);
                 NetMessage.SendData((int)PacketTypes.NpcUpdateBuff, -1, -1, null, npc.whoAmI);
 
                 int hitDir = npc.Center.X >= center.X ? 1 : -1;
-                npc.StrikeNPC(pulseDamage, 1.5f, hitDir);
-                NetMessage.SendData((int)PacketTypes.NpcStrike, -1, -1, null, npc.whoAmI, pulseDamage, 1.5f, hitDir);
+                npc.StrikeNPC(pulseDamage, 2f, hitDir);
+                NetMessage.SendData((int)PacketTypes.NpcStrike, -1, -1, null, npc.whoAmI, pulseDamage, 2f, hitDir);
 
+                // Volcanic Bombardment tepat ke badan musuh
                 Vector2 strikeDir = ElementVisualHelper.GetAimDirection(center, npc.Center);
                 int strikeProj = tier switch
                 {
-                    <= 3 => ElementVisualHelper.ProjFoxparksFireball,
-                    <= 5 => ProjectileID.DD2PhoenixBowShot,
-                    6 => ProjectileID.DD2BetsyFireball,
+                    <= 3 => ProjectileID.DD2BetsyFireball,
+                    <= 5 => ProjectileID.DD2BetsyFlameBreath,
+                    6 => ProjectileID.EyeBeam,
                     _ => ProjectileID.Daybreak
                 };
-                ElementVisualHelper.SpawnVisualProjectile(npc.Center - strikeDir * 32f, strikeDir * 10f, strikeProj, 24, ownerIdx);
+                ElementVisualHelper.SpawnVisualProjectile(npc.Center - strikeDir * 40f, strikeDir * 12f, strikeProj, 26, ownerIdx);
 
                 hitCount++;
-                if (hitCount >= 4) break;
+                if (hitCount >= 5) break;
             }
         }
     }

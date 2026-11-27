@@ -70,6 +70,7 @@ namespace Univers.Aetherial
             public int Tier { get; init; }
             public DateTime ExpiresAtUtc { get; init; }
             public int PulseCount { get; set; }
+            public Dictionary<Point, (ushort type, bool active, short frameX, short frameY)> OriginalTiles { get; init; } = new();
         }
 
         public static readonly Dictionary<string, IElementProfile> ElementRegistry = new(StringComparer.OrdinalIgnoreCase)
@@ -255,6 +256,28 @@ namespace Univers.Aetherial
                 if (owner == null || !owner.Active || !owner.IsLoggedIn || owner.TPlayer == null || owner.Dead || now >= domain.ExpiresAtUtc)
                 {
                     ActiveDomains.TryRemove(ownerIdx, out _);
+
+                    // Pulihkan blok asli
+                    if (domain.OriginalTiles.Count > 0)
+                    {
+                        foreach (var tileKvp in domain.OriginalTiles)
+                        {
+                            var pt = tileKvp.Key;
+                            var original = tileKvp.Value;
+                            if (pt.X < 0 || pt.X >= Main.maxTilesX || pt.Y < 0 || pt.Y >= Main.maxTilesY) continue;
+
+                            var t = Main.tile[pt.X, pt.Y];
+                            if (t != null)
+                            {
+                                t.type = original.type;
+                                t.active(original.active);
+                                t.frameX = original.frameX;
+                                t.frameY = original.frameY;
+                                TSPlayer.All.SendTileSquare(pt.X, pt.Y, 1);
+                            }
+                        }
+                    }
+
                     if (owner != null && owner.Active && owner.IsLoggedIn)
                     {
                         owner.SendInfoMessage($"[ AETHERIAL ] Domain Expansion ({domain.ElementId}) telah berakhir.");
@@ -387,8 +410,7 @@ namespace Univers.Aetherial
             int cooldownSec = Math.Max(10, Config.DomainCooldownSeconds);
             Vector2 castCenter = player.TPlayer.Center;
 
-            DomainCooldowns[player.Index] = now.AddSeconds(cooldownSec);
-            ActiveDomains[player.Index] = new ActiveDomainState
+            var domainState = new ActiveDomainState
             {
                 OwnerIndex = player.Index,
                 ElementId = elemMod.ElementId,
@@ -397,6 +419,39 @@ namespace Univers.Aetherial
                 ExpiresAtUtc = now.AddSeconds(durationSec),
                 PulseCount = 0
             };
+
+            // [EKSPERIMEN BRUTAL]: Bentuk dinding penjara blok Hellstone Brick melingkar 1 blok di batas domain!
+            float domainRadius = IgnisElement.GetDomainRadius(tier);
+            int centerTileX = (int)(castCenter.X / 16f);
+            int centerTileY = (int)(castCenter.Y / 16f);
+            int radiusTiles = (int)(domainRadius / 16f);
+
+            for (int x = centerTileX - radiusTiles; x <= centerTileX + radiusTiles; x++)
+            {
+                for (int y = centerTileY - radiusTiles; y <= centerTileY + radiusTiles; y++)
+                {
+                    if (x < 1 || x >= Main.maxTilesX - 1 || y < 1 || y >= Main.maxTilesY - 1) continue;
+                    float distTiles = Vector2.Distance(new Vector2(x, y), new Vector2(centerTileX, centerTileY));
+
+                    // Buat lingkaran berongga setebal 1 blok di radius terjauh domain
+                    if (distTiles >= radiusTiles - 1.2f && distTiles <= radiusTiles + 0.8f)
+                    {
+                        var t = Main.tile[x, y];
+                        if (t != null)
+                        {
+                            var pt = new Point(x, y);
+                            domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY);
+
+                            t.type = TileID.HellstoneBrick; // Blok Magma Menyala!
+                            t.active(true);
+                            TSPlayer.All.SendTileSquare(x, y, 1);
+                        }
+                    }
+                }
+            }
+
+            DomainCooldowns[player.Index] = now.AddSeconds(cooldownSec);
+            ActiveDomains[player.Index] = domainState;
 
             elemMod.OnDomainActivate(player, castCenter, tier);
 
