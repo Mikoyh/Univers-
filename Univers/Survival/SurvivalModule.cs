@@ -822,6 +822,7 @@ namespace Univers.Survival
 
         private static void ApplySurvivalConsequences(TSPlayer player, SurvivalRuntimeState st, bool nearBoss, DateTime now)
         {
+            if (player.GodMode) return;
             var prof = st.Profile;
 
             // A. Kegelapan Total (Charlie Effect!)

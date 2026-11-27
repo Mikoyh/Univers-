@@ -68,7 +68,7 @@ namespace Univers.Aetherial
             public string ElementId { get; init; } = string.Empty;
             public Vector2 Center { get; init; }
             public int Tier { get; init; }
-            public DateTime ExpiresAtUtc { get; init; }
+            public DateTime ExpiresAtUtc { get; set; }
             public int PulseCount { get; set; }
             public Dictionary<Point, (ushort type, bool active, short frameX, short frameY, ushort wall)> OriginalTiles { get; init; } = new();
         }
@@ -289,6 +289,27 @@ namespace Univers.Aetherial
                 var elemMod = GetElementProfile(domain.ElementId);
                 if (elemMod != null && elemMod.SupportsDomainExpansion)
                 {
+                    float domainRadius = 450f + (domain.Tier * 75f);
+                    bool hasEnemies = false;
+                    foreach (var npc in Main.npc)
+                    {
+                        if (npc != null && npc.active && !npc.friendly && npc.lifeMax > 5 && !npc.dontTakeDamage)
+                        {
+                            if ((npc.Center - domain.Center).Length() <= domainRadius + 120f)
+                            {
+                                hasEnemies = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!hasEnemies)
+                    {
+                        if ((domain.ExpiresAtUtc - now).TotalSeconds > 10.0)
+                        {
+                            domain.ExpiresAtUtc = now.AddSeconds(10.0);
+                        }
+                    }
+
                     domain.PulseCount++;
                     elemMod.OnDomainPulse(owner, domain.Center, domain.Tier, domain.PulseCount);
                 }
@@ -297,7 +318,33 @@ namespace Univers.Aetherial
 
         private static void OnNetGetData(GetDataEventArgs args)
         {
-            if (args.Handled || args.MsgID != PacketTypes.PlayerUpdate || args.Length < 2) return;
+            if (args.Handled) return;
+
+            if (args.MsgID == PacketTypes.ItemDrop && args.Length >= 14)
+            {
+                try
+                {
+                    using var reader = new BinaryReader(new MemoryStream(args.Msg.readBuffer, args.Index, args.Length));
+                    reader.ReadInt16();
+                    reader.ReadSingle();
+                    reader.ReadSingle();
+                    reader.ReadSingle();
+                    reader.ReadSingle();
+                    reader.ReadInt16();
+                    reader.ReadByte();
+                    reader.ReadByte();
+                    short netId = reader.ReadInt16();
+                    if (IsAnyLargeGemId(netId))
+                    {
+                        args.Handled = true;
+                        return;
+                    }
+                }
+                catch { }
+                return;
+            }
+
+            if (args.MsgID != PacketTypes.PlayerUpdate || args.Length < 2) return;
 
             int who = args.Msg.whoAmI;
             if (who < 0 || who >= TShock.Players.Length) return;
@@ -416,8 +463,8 @@ namespace Univers.Aetherial
                 return false;
             }
 
-            double durationSec = 4.5 + (tier * 0.5);
-            int cooldownSec = Math.Max(10, Config.DomainCooldownSeconds);
+            double durationSec = 60.0; // 1 menit
+            int cooldownSec = 300;     // 5 menit (300 detik)
             Vector2 castCenter = player.TPlayer.Center;
 
             var domainState = new ActiveDomainState

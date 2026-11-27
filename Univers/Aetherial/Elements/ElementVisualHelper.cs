@@ -182,7 +182,6 @@ namespace Univers.Aetherial.Elements
         {
             if (projId <= 0) return;
 
-            int effectiveOwner = 255;
             Vector2 finalVel = vel;
 
             // Lightning arc (aiStyle 88: 466 CultistBossLightningOrbArc, 580 VortexLightning) butuh arah & seed non-nol
@@ -218,6 +217,8 @@ namespace Univers.Aetherial.Elements
                 if (ai0 == 0f && finalVel.LengthSquared() > 0.01f) ai0 = finalVel.ToRotation();
             }
 
+            int targetOwner = (ownerIndex >= 0 && ownerIndex < 255) ? ownerIndex : Main.myPlayer;
+
             int idx = Projectile.NewProjectile(
                 Projectile.GetNoneSource(),
                 pos,
@@ -225,7 +226,7 @@ namespace Univers.Aetherial.Elements
                 projId,
                 0,
                 0f,
-                effectiveOwner,
+                Main.myPlayer,
                 ai0,
                 ai1,
                 ai2);
@@ -233,6 +234,7 @@ namespace Univers.Aetherial.Elements
             if (idx >= 0 && idx < Main.maxProjectiles)
             {
                 var p = Main.projectile[idx];
+                p.owner = targetOwner;
                 p.friendly = true;
                 p.hostile = false;
                 p.damage = 0;

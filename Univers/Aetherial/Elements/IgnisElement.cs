@@ -183,14 +183,15 @@ namespace Univers.Aetherial.Elements
             int ownerIdx = owner.Index;
             float radius = GetDomainRadius(tier);
 
-            // 1. Dinding Magma Keliling Gila-gilaan (Multi-layer boundary ring)
-            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.SolarFlareRay, 12, radius * 0.9f, 40, 4f, ownerIdx, scale: 1.3f);
-            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.DD2BetsyFireball, 8, radius * 0.75f, 38, 3.5f, ownerIdx, scale: 1.2f);
+            // 1. Dinding Magma Keliling Gila-gilaan (Multi-layer boundary ring - BRUTAL COUNT)
+            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.SolarFlareRay, 20, radius * 0.9f, 45, 4.5f, ownerIdx, scale: 1.4f);
+            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.DD2BetsyFireball, 16, radius * 0.78f, 42, 4f, ownerIdx, scale: 1.3f);
+            ElementVisualHelper.SpawnRingProjectiles(center, ProjectileID.Daybreak, 12, radius * 0.65f, 40, 3.5f, ownerIdx, scale: 1.2f);
 
             // 2. Pusat Kawah Meledak (Volcano & Solar Explosion)
-            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 36, ownerIdx, scale: 1.5f);
-            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.SolarWhipSwordExplosion, 34, ownerIdx, scale: 1.4f);
-            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.DD2ExplosiveTrapT3Explosion, 32, ownerIdx);
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ElementVisualHelper.ProjVolcano144, 36, ownerIdx, scale: 1.6f);
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.SolarWhipSwordExplosion, 34, ownerIdx, scale: 1.5f);
+            ElementVisualHelper.SpawnVisualProjectile(center, Vector2.Zero, ProjectileID.DD2ExplosiveTrapT3Explosion, 32, ownerIdx, scale: 1.4f);
 
             // 3. Magic Ritual Circle Magma Kosmik
             ElementVisualHelper.SpawnMagicRitualRing(
@@ -198,16 +199,17 @@ namespace Univers.Aetherial.Elements
                 ownerIdx,
                 ProjectileID.SolarFlareRay,
                 ProjectileID.FairyQueenSunDance,
-                ProjectileID.StardustTowerMark,
-                radius: Math.Min(110f, radius * 0.4f),
-                outerCount: 8,
-                chordCount: 4,
-                spinSpeed: 6.0f,
-                timeLeft: 36);
+                ProjectileID.DD2BetsyFireball,
+                radius: Math.Min(120f, radius * 0.45f),
+                outerCount: 12,
+                chordCount: 6,
+                spinSpeed: 6.5f,
+                timeLeft: 40);
 
-            // 4. Hujan Meteor Magma Awal (Volcanic Rain Burst)
-            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.DD2BetsyFireball, 6, radius * 1.4f, 180f, 14f, 32, ownerIdx);
-            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 4, radius * 1.2f, 160f, 15f, 30, ownerIdx);
+            // 4. Hujan Meteor Magma Awal (Volcanic Rain Burst - BRUTAL)
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.DD2BetsyFireball, 12, radius * 1.5f, 190f, 15f, 35, ownerIdx);
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 10, radius * 1.3f, 170f, 16f, 32, ownerIdx);
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.FlamingScythe, 8, radius * 1.1f, 150f, 14f, 30, ownerIdx);
 
             owner.SetBuff(BuffID.Inferno, (8 + tier) * 60);
             owner.SetBuff(BuffID.Wrath, (8 + tier) * 60);
@@ -222,47 +224,59 @@ namespace Univers.Aetherial.Elements
             float radius = GetDomainRadius(tier);
             float spinAngle = pulseIndex * 0.55f;
 
-            // 1. Dinding Magma Berputar Cepat di Batas Domain
-            int edgeCount = Math.Min(12, 6 + tier);
+            // Boss Confinement (Fiery Repulsion Barrier) - mencegah boss keluar domain
+            foreach (var npc in Main.npc)
+            {
+                if (npc == null || !npc.active || npc.friendly || !npc.boss) continue;
+                float dist = Vector2.Distance(npc.Center, center);
+                if (dist >= radius - 55f)
+                {
+                    Vector2 pushDir = ElementVisualHelper.GetAimDirection(npc.Center, center);
+                    npc.velocity = pushDir * 16f;
+                    npc.position += pushDir * 28f;
+                    NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, npc.whoAmI);
+                    ElementVisualHelper.SpawnVisualProjectile(npc.Center, Vector2.Zero, ProjectileID.DD2BetsyFireball, 24, ownerIdx, scale: 1.6f);
+                }
+            }
+
+            // 1. Dinding Magma Berputar Cepat di Batas Domain (Brutal Count)
+            int edgeCount = Math.Min(28, 16 + (tier * 2));
             int edgeProj = (pulseIndex % 2 == 0) ? ProjectileID.SolarFlareRay : ProjectileID.DD2BetsyFireball;
             for (int i = 0; i < edgeCount; i++)
             {
                 float angle = spinAngle + MathHelper.TwoPi * i / edgeCount;
                 Vector2 edgePos = center + new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * radius;
-                Vector2 tangentVel = new Vector2(-(float)Math.Sin(angle), (float)Math.Cos(angle)) * 5.5f;
-                ElementVisualHelper.SpawnVisualProjectile(edgePos, tangentVel, edgeProj, 26, ownerIdx);
+                Vector2 tangentVel = new Vector2(-(float)Math.Sin(angle), (float)Math.Cos(angle)) * 6.5f;
+                ElementVisualHelper.SpawnVisualProjectile(edgePos, tangentVel, edgeProj, 28, ownerIdx);
             }
 
-            // 2. Lantai Kawah Meletus (Eruption from Ground)
-            for (int e = 0; e < 2; e++)
+            // 2. Lantai Kawah Meletus (Eruption from Ground - Brutal)
+            for (int e = 0; e < 4; e++)
             {
-                float randOffset = (Rnd.NextSingle() - 0.5f) * (radius * 1.3f);
+                float randOffset = (Rnd.NextSingle() - 0.5f) * (radius * 1.4f);
                 Vector2 floorPos = new Vector2(center.X + randOffset, center.Y + 20f);
-                int floorProj = (e == 0) ? ProjectileID.DD2ExplosiveTrapT2Explosion : ElementVisualHelper.ProjVolcano144;
-                ElementVisualHelper.SpawnVisualProjectile(floorPos, new Vector2(0f, -8f), floorProj, 26, ownerIdx);
+                int floorProj = (e % 2 == 0) ? ProjectileID.DD2ExplosiveTrapT3Explosion : ElementVisualHelper.ProjVolcano144;
+                ElementVisualHelper.SpawnVisualProjectile(floorPos, new Vector2(0f, -9f), floorProj, 28, ownerIdx);
             }
 
-            // 3. Hujan Magma Jogo (Volcanic Rain setiap pulse)
-            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.FlamingScythe, 2, radius * 1.1f, 150f, 13f, 26, ownerIdx);
-            if (pulseIndex % 2 == 0)
-            {
-                ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 2, radius * 1.2f, 170f, 14f, 26, ownerIdx);
-            }
+            // 3. Hujan Magma Jogo (Volcanic Rain brutal setiap pulse)
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.FlamingScythe, 4, radius * 1.2f, 160f, 14f, 28, ownerIdx);
+            ElementVisualHelper.SpawnRainProjectiles(center, ProjectileID.Daybreak, 4, radius * 1.3f, 180f, 15f, 28, ownerIdx);
 
             // 4. Letusan Sigil Inti Berkala
-            if (pulseIndex % 3 == 0)
+            if (pulseIndex % 2 == 0)
             {
                 ElementVisualHelper.SpawnMagicRitualRing(
                     center,
                     ownerIdx,
                     ProjectileID.SolarFlareRay,
                     ProjectileID.EyeBeam,
-                    ProjectileID.SolarWhipSwordExplosion,
-                    radius: Math.Min(96f, radius * 0.35f),
-                    outerCount: 8,
-                    chordCount: 4,
-                    spinSpeed: 5.5f,
-                    timeLeft: 30,
+                    ProjectileID.DD2BetsyFireball,
+                    radius: Math.Min(110f, radius * 0.4f),
+                    outerCount: 10,
+                    chordCount: 5,
+                    spinSpeed: 6.0f,
+                    timeLeft: 32,
                     tryNativeCultistRitual: false,
                     angleOffset: spinAngle);
             }
@@ -272,12 +286,12 @@ namespace Univers.Aetherial.Elements
             {
                 owner.SetBuff(BuffID.Inferno, 180);
                 owner.SetBuff(BuffID.Campfire, 180);
-                owner.SetBuff(BuffID.ObsidianSkin, 180); // Kebal mutlak terhadap api/lava dalam domain sendiri!
+                owner.SetBuff(BuffID.ObsidianSkin, 180);
             }
 
-            // 6. Siksa Musuh di dalam Domain (Magma Burn & Volcanic Strike)
+            // 6. Siksa Musuh di dalam Domain (PERMANENT HELLFIRE & Volcanic Strike Brutal)
             int hitCount = 0;
-            int pulseDamage = 35 + (tier * 35);
+            int pulseDamage = 45 + (tier * 40);
             int debuffId = GetMobDebuffId(tier);
 
             foreach (var npc in Main.npc)
@@ -285,15 +299,17 @@ namespace Univers.Aetherial.Elements
                 if (npc == null || !npc.active || npc.friendly || npc.lifeMax <= 5 || npc.dontTakeDamage) continue;
                 if ((npc.Center - center).Length() > radius) continue;
 
-                npc.AddBuff(debuffId, 280);
-                npc.AddBuff(BuffID.OnFire3, 280);
+                // Permanent Hellfire di dalam domain selagi domain aktif!
+                npc.AddBuff(BuffID.OnFire3, 300);
+                npc.AddBuff(debuffId, 300);
+                npc.AddBuff(BuffID.CursedInferno, 300);
                 NetMessage.SendData((int)PacketTypes.NpcUpdateBuff, -1, -1, null, npc.whoAmI);
 
                 int hitDir = npc.Center.X >= center.X ? 1 : -1;
-                npc.StrikeNPC(pulseDamage, 2f, hitDir);
-                NetMessage.SendData((int)PacketTypes.NpcStrike, -1, -1, null, npc.whoAmI, pulseDamage, 2f, hitDir);
+                npc.StrikeNPC(pulseDamage, 3f, hitDir);
+                NetMessage.SendData((int)PacketTypes.NpcStrike, -1, -1, null, npc.whoAmI, pulseDamage, 3f, hitDir);
 
-                // Volcanic Bombardment tepat ke badan musuh
+                // Volcanic Bombardment brutal ke badan musuh
                 Vector2 strikeDir = ElementVisualHelper.GetAimDirection(center, npc.Center);
                 int strikeProj = tier switch
                 {
@@ -302,10 +318,10 @@ namespace Univers.Aetherial.Elements
                     6 => ProjectileID.EyeBeam,
                     _ => ProjectileID.Daybreak
                 };
-                ElementVisualHelper.SpawnVisualProjectile(npc.Center - strikeDir * 40f, strikeDir * 12f, strikeProj, 26, ownerIdx);
+                ElementVisualHelper.SpawnVisualProjectile(npc.Center - strikeDir * 40f, strikeDir * 13f, strikeProj, 28, ownerIdx);
 
                 hitCount++;
-                if (hitCount >= 5) break;
+                if (hitCount >= 10) break;
             }
         }
     }
