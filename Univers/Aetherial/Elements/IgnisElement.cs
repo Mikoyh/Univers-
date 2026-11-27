@@ -174,7 +174,7 @@ namespace Univers.Aetherial.Elements
         public bool SupportsDomainExpansion => true;
         public string DomainName => "CRIMSON HELLFIRE";
 
-        public static float GetDomainRadius(int tier) => 190f + (Math.Clamp(tier, 1, 7) * 40f);
+        public static float GetDomainRadius(int tier) => 450f + (Math.Clamp(tier, 1, 7) * 75f);
 
         public void OnDomainActivate(TSPlayer owner, Vector2 center, int tier)
         {
@@ -267,11 +267,12 @@ namespace Univers.Aetherial.Elements
                     angleOffset: spinAngle);
             }
 
-            // 5. Caster Buff Maintenance
+            // 5. Caster Buff Maintenance & Immunity to own domain burn
             if ((owner.TPlayer.Center - center).Length() <= radius)
             {
                 owner.SetBuff(BuffID.Inferno, 180);
                 owner.SetBuff(BuffID.Campfire, 180);
+                owner.SetBuff(BuffID.ObsidianSkin, 180); // Kebal mutlak terhadap api/lava dalam domain sendiri!
             }
 
             // 6. Siksa Musuh di dalam Domain (Magma Burn & Volcanic Strike)

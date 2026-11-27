@@ -1,11 +1,15 @@
-# AI Studio preview & workspace support files
+# Node modules & preview artifacts
 node_modules/
 dist/
 .vite/
 .aistudio/
 public/
+package.json
+index.html
+src/
+vite.config.ts
 
-# .NET build artifacts & binaries
+# .NET / MSBuild artifacts & binaries
 bin/
 obj/
 .vs/
@@ -14,10 +18,16 @@ obj/
 *.pdb
 *.cache
 *.db
+*.log
 
-# Univers runtime data & logs
+# Univers runtime data & build outputs
 Univers/bin/
 Univers/obj/
-Univers/tshock/
-Univers/ServerLog.txt
-*.db
+Univers/**/*.dll
+Univers/**/*.pdb
+Univers/**/*.cache
+Univers/**/*.db
+Univers/**/*.log
+server.js
+server.ts
+package-lock.json

@@ -391,21 +391,30 @@ namespace Univers.Aetherial
 
             if (DomainCooldowns.TryGetValue(player.Index, out DateTime cdUntil) && now < cdUntil)
             {
-                int secLeft = Math.Max(1, (int)Math.Ceiling((cdUntil - now).TotalSeconds));
-                if (!DomainCooldownNotifyThrottle.TryGetValue(player.Index, out DateTime nextMsg) || now >= nextMsg)
+                if (!player.HasPermission("univers.element.admin") && !player.HasPermission("skynomi.element.admin"))
                 {
-                    DomainCooldownNotifyThrottle[player.Index] = now.AddSeconds(1.5);
-                    player.SendData(
-                        PacketTypes.CreateCombatTextExtended,
-                        $"[c/94a3b8:[ DOMAIN CD: {secLeft}s ]]",
-                        (int)player.TPlayer.position.X,
-                        (int)player.TPlayer.position.Y - 30);
-                    player.SendWarningMessage($"[ COOLDOWN ] Domain {elemMod.DomainName} siap digunakan dalam {secLeft} detik.");
+                    int secLeft = Math.Max(1, (int)Math.Ceiling((cdUntil - now).TotalSeconds));
+                    if (!DomainCooldownNotifyThrottle.TryGetValue(player.Index, out DateTime nextMsg) || now >= nextMsg)
+                    {
+                        DomainCooldownNotifyThrottle[player.Index] = now.AddSeconds(1.5);
+                        player.SendData(
+                            PacketTypes.CreateCombatTextExtended,
+                            $"[c/94a3b8:[ DOMAIN CD: {secLeft}s ]]",
+                            (int)player.TPlayer.position.X,
+                            (int)player.TPlayer.position.Y - 30);
+                        player.SendWarningMessage($"[ COOLDOWN ] Domain {elemMod.DomainName} siap digunakan dalam {secLeft} detik.");
+                    }
+                    return false;
                 }
-                return false;
             }
 
             int tier = GetTierStatsForLevel(Math.Max(1, profile.ElementLevel)).TierNumber;
+            if (tier < 6 && !player.HasPermission("univers.element.admin") && !player.HasPermission("skynomi.element.admin"))
+            {
+                player.SendErrorMessage($"[ ERROR ] Domain Expansion membutuhkan minimal Tier 6 (Level 580+)! Tier kamu saat ini: Tier {tier}.");
+                return false;
+            }
+
             double durationSec = 4.5 + (tier * 0.5);
             int cooldownSec = Math.Max(10, Config.DomainCooldownSeconds);
             Vector2 castCenter = player.TPlayer.Center;
@@ -420,8 +429,8 @@ namespace Univers.Aetherial
                 PulseCount = 0
             };
 
-            // [EKSPERIMEN BRUTAL]: Bentuk dinding penjara blok Hellstone Brick melingkar 1 blok di batas domain!
-            float domainRadius = 190f + (Math.Clamp(tier, 1, 7) * 40f);
+            // [EKSPERIMEN BRUTAL + LUAS]: Radius lebih besar, aman dari chest/pintu, dan dinding background neraka (Hellstone Wall)!
+            float domainRadius = 450f + (Math.Clamp(tier, 1, 7) * 75f);
             int centerTileX = (int)(castCenter.X / 16f);
             int centerTileY = (int)(castCenter.Y / 16f);
             int radiusTiles = (int)(domainRadius / 16f);
@@ -433,19 +442,34 @@ namespace Univers.Aetherial
                     if (x < 1 || x >= Main.maxTilesX - 1 || y < 1 || y >= Main.maxTilesY - 1) continue;
                     float distTiles = Vector2.Distance(new Vector2(x, y), new Vector2(centerTileX, centerTileY));
 
-                    // Buat lingkaran berongga setebal 1 blok di radius terjauh domain
-                    if (distTiles >= radiusTiles - 1.2f && distTiles <= radiusTiles + 0.8f)
-                    {
-                        var t = Main.tile[x, y];
-                        if (t != null)
-                        {
-                            var pt = new Point(x, y);
-                            domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY);
+                    var t = Main.tile[x, y];
+                    if (t == null) continue;
 
-                            t.type = TileID.HellstoneBrick; // Blok Magma Menyala!
-                            t.active(true);
-                            TSPlayer.All.SendTileSquareCentered(x, y, 1);
-                        }
+                    // Jangan pernah ubah Chest, Pintu, TILE container/tile penting agar item aman tidak hilang
+                    if (t.type == TileID.Containers || t.type == TileID.Containers2 || t.type == TileID.ClosedDoor || 
+                        t.type == TileID.OpenDoor || t.type == TileID.Platforms || t.type == TileID.Beds || t.type == TileID.Tables)
+                    {
+                        continue;
+                    }
+
+                    var pt = new Point(x, y);
+
+                    // 1. Dinding batas luar domain (Hellstone Brick)
+                    if (distTiles >= radiusTiles - 1.4f && distTiles <= radiusTiles + 0.8f)
+                    {
+                        domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY);
+                        t.type = TileID.HellstoneBrick;
+                        t.active(true);
+                        TSPlayer.All.SendTileSquareCentered(x, y, 1);
+                    }
+                    // 2. Interior dalam domain: pasang wall Neraka (Hellstone Wall) biar suasana gelap/merah merinding
+                    else if (distTiles < radiusTiles - 1.4f)
+                    {
+                        // Simpan wall asli juga kalau mau (opsional, kita simpan type tile & wall)
+                        // Untuk amannya kita ubah background wall jadi Hellstone Wall (ID 14 atau sejenisnya, misal WallID.HellstoneBrick / 83)
+                        domainState.OriginalTiles[pt] = (t.type, t.active(), t.frameX, t.frameY);
+                        t.wall = 83; // Hellstone Brick Wall
+                        TSPlayer.All.SendTileSquareCentered(x, y, 1);
                     }
                 }
             }
