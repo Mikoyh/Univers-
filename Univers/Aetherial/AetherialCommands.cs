@@ -49,6 +49,20 @@ namespace Univers.Aetherial
                 return;
             }
 
+            // /domain cancel  -> tutup domain sekarang tanpa nunggu 3 detik
+            if (args.Parameters.Count > 0)
+            {
+                string sub = args.Parameters[0].ToLowerInvariant();
+                if (sub == "cancel" || sub == "stop" || sub == "off" || sub == "batal")
+                {
+                    if (AetherialModule.CancelActiveDomain(player, out string msg))
+                        player.SendSuccessMessage(msg);
+                    else
+                        player.SendWarningMessage(msg);
+                    return;
+                }
+            }
+
             AetherialModule.TryActivateDomainExpansion(player);
         }
 
@@ -116,6 +130,16 @@ namespace Univers.Aetherial
 
                 case "domain":
                 case "ult":
+                    if (args.Parameters.Count > 1 &&
+                        (args.Parameters[1].Equals("cancel", StringComparison.OrdinalIgnoreCase) ||
+                         args.Parameters[1].Equals("batal", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (AetherialModule.CancelActiveDomain(player, out string cancelMsg))
+                            player.SendSuccessMessage(cancelMsg);
+                        else
+                            player.SendWarningMessage(cancelMsg);
+                        break;
+                    }
                     AetherialModule.TryActivateDomainExpansion(player);
                     break;
 

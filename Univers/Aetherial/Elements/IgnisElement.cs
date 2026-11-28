@@ -283,12 +283,20 @@ namespace Univers.Aetherial.Elements
                     angleOffset: spinAngle);
             }
 
-            // 5. Caster Buff Maintenance & Immunity to own domain burn
+            // 5. Caster immunity: pasang ObsidianSkin terus dan BERSIHKAN debuff api dari badan caster.
+            // Tanpa ini, player yang buka domain malah kebakar apinya sendiri / mati.
             if ((owner.TPlayer.Center - center).Length() <= radius)
             {
-                owner.SetBuff(BuffID.Inferno, 180);
+                owner.SetBuff(BuffID.ObsidianSkin, 600);
                 owner.SetBuff(BuffID.Campfire, 180);
-                owner.SetBuff(BuffID.ObsidianSkin, 180);
+
+                int[] selfFireBuffs = { BuffID.OnFire, BuffID.OnFire3, BuffID.CursedInferno, BuffID.Burning };
+                foreach (int bid in selfFireBuffs)
+                {
+                    int idx = owner.TPlayer.FindBuffIndex(bid);
+                    if (idx != -1) owner.TPlayer.DelBuff(idx);
+                }
+                NetMessage.SendData((int)PacketTypes.PlayerBuff, -1, -1, null, ownerIdx);
             }
 
             // 6. Siksa Musuh di dalam Domain (PERMANENT HELLFIRE & Volcanic Strike Brutal)

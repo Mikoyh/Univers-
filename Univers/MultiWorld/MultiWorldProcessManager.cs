@@ -165,10 +165,16 @@ namespace Univers.MultiWorld
             var list = new List<WorldStatusSnapshot>();
             DateTime now = DateTime.UtcNow;
 
+            // Player yang dilaporkan proses ini sebenarnya ada di world tempat proses ini berjalan
+            // (bisa hub/lobby ATAU world lain bila master dijalankan sebagai world tersebut).
+            string localWorldId = MultiWorldModule.CurrentWorldId ?? string.Empty;
+
             foreach (var def in _config.Worlds.ToList())
             {
                 if (def.IsHub)
                 {
+                    bool localIsHere = def.Id.Equals(localWorldId, StringComparison.OrdinalIgnoreCase);
+                    var hubNames = localIsHere ? hubPlayerNames : new List<string>();
                     list.Add(new WorldStatusSnapshot
                     {
                         Id = def.Id,
@@ -179,9 +185,9 @@ namespace Univers.MultiWorld
                         Size = def.Size,
                         Difficulty = def.Difficulty,
                         Evil = def.Evil,
-                        State = "Running",
-                        PlayerCount = hubPlayerNames.Count,
-                        OnlinePlayerNames = hubPlayerNames,
+                        State = localIsHere ? "Running" : "Sleeping",
+                        PlayerCount = hubNames.Count,
+                        OnlinePlayerNames = hubNames,
                         AutoSleep = false,
                         AutoSleepMinutes = 0,
                         IdleSeconds = 0,
@@ -201,6 +207,13 @@ namespace Univers.MultiWorld
 
                 int pCount = alive && rt != null ? rt.PlayerCount : 0;
                 var pNames = alive && rt != null ? new List<string>(rt.OnlinePlayerNames) : new List<string>();
+
+                // Jika proses ini SENDIRI yang menjalankan world ini (bukan child), pakai daftar lokal.
+                if (def.Id.Equals(localWorldId, StringComparison.OrdinalIgnoreCase))
+                {
+                    pNames = new List<string>(hubPlayerNames);
+                    pCount = pNames.Count;
+                }
                 int idleSec = alive && rt != null && pCount == 0 && rt.State == WorldRuntimeState.Running
                     ? Math.Max(0, (int)(now - rt.LastNonEmptyUtc).TotalSeconds)
                     : 0;

@@ -226,7 +226,7 @@ namespace Univers.Aetherial.Elements
                 projId,
                 0,
                 0f,
-                Main.myPlayer,
+                targetOwner,
                 ai0,
                 ai1,
                 ai2);
@@ -234,7 +234,6 @@ namespace Univers.Aetherial.Elements
             if (idx >= 0 && idx < Main.maxProjectiles)
             {
                 var p = Main.projectile[idx];
-                p.owner = targetOwner;
                 p.friendly = true;
                 p.hostile = false;
                 p.damage = 0;

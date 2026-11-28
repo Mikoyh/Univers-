@@ -69,6 +69,7 @@ namespace Univers.Aetherial
             public Vector2 Center { get; init; }
             public int Tier { get; init; }
             public DateTime ExpiresAtUtc { get; set; }
+            public DateTime EmptySinceUtc { get; set; } = DateTime.MinValue;
             public int PulseCount { get; set; }
             public Dictionary<Point, (ushort type, bool active, short frameX, short frameY, ushort wall)> OriginalTiles { get; init; } = new();
         }
@@ -173,6 +174,41 @@ namespace Univers.Aetherial
         private static void OnServerLeave(LeaveEventArgs args)
         {
             ClearPlayerVisualState(args.Who);
+        }
+
+        private static void RestoreDomainTiles(ActiveDomainState domain)
+        {
+            if (domain.OriginalTiles.Count == 0) return;
+            foreach (var tileKvp in domain.OriginalTiles)
+            {
+                var pt = tileKvp.Key;
+                var original = tileKvp.Value;
+                if (pt.X < 0 || pt.X >= Main.maxTilesX || pt.Y < 0 || pt.Y >= Main.maxTilesY) continue;
+
+                var t = Main.tile[pt.X, pt.Y];
+                if (t == null) continue;
+                t.type = original.type;
+                t.active(original.active);
+                t.frameX = original.frameX;
+                t.frameY = original.frameY;
+                t.wall = original.wall;
+                TSPlayer.All.SendTileSquareCentered(pt.X, pt.Y, 1);
+            }
+        }
+
+        // Dipanggil oleh /domain cancel atau saat domain dipaksa berhenti.
+        public static bool CancelActiveDomain(TSPlayer player, out string message)
+        {
+            message = string.Empty;
+            if (player == null || !player.Active) { message = "Player tidak aktif."; return false; }
+            if (!ActiveDomains.TryRemove(player.Index, out var domain))
+            {
+                message = "Kamu tidak sedang membuka Domain Expansion.";
+                return false;
+            }
+            RestoreDomainTiles(domain);
+            message = $"[ AETHERIAL ] Domain {domain.ElementId} dibatalkan.";
+            return true;
         }
 
         internal static void ClearPlayerVisualState(int playerIndex)
@@ -294,32 +330,72 @@ namespace Univers.Aetherial
                         ? Elements.IgnisElement.GetDomainRadius(domain.Tier)
                         : 450f + (domain.Tier * 75f);
 
+                    // Deteksi musuh di dalam domain.
                     bool hasEnemies = false;
+                    NPC? nearestEnemy = null;
+                    float nearestDistSq = float.MaxValue;
                     foreach (var npc in Main.npc)
                     {
-                        if (npc != null && npc.active && !npc.friendly && npc.lifeMax > 5 && !npc.dontTakeDamage)
+                        if (npc == null || !npc.active || npc.friendly || npc.lifeMax <= 5 || npc.dontTakeDamage) continue;
+                        float d2 = Vector2.DistanceSquared(npc.Center, domain.Center);
+                        if (d2 <= (domainRadius + 120f) * (domainRadius + 120f))
                         {
-                            if ((npc.Center - domain.Center).Length() <= domainRadius + 120f)
-                            {
-                                hasEnemies = true;
-                                break;
-                            }
+                            hasEnemies = true;
+                            if (d2 < nearestDistSq) { nearestDistSq = d2; nearestEnemy = npc; }
                         }
                     }
 
+                    // Auto-clear cepat: jika sudah 3 detik tanpa musuh, tutup domain lebih awal.
                     if (hasEnemies)
                     {
-                        // Selama masih ada musuh di dalam domain, tahan domain tetap aktif
-                        // (rolling +10s) supaya projectile spam tidak pernah berhenti.
-                        domain.ExpiresAtUtc = now.AddSeconds(10.0);
+                        domain.EmptySinceUtc = DateTime.MinValue;
                     }
-                    else if ((domain.ExpiresAtUtc - now).TotalSeconds > 10.0)
+                    else if (domain.EmptySinceUtc == DateTime.MinValue)
                     {
-                        domain.ExpiresAtUtc = now.AddSeconds(10.0);
+                        domain.EmptySinceUtc = now;
+                    }
+
+                    bool emptyTooLong = !hasEnemies && domain.EmptySinceUtc != DateTime.MinValue &&
+                                        (now - domain.EmptySinceUtc).TotalSeconds >= 3.0;
+                    if (emptyTooLong)
+                    {
+                        ActiveDomains.TryRemove(ownerIdx, out _);
+                        RestoreDomainTiles(domain);
+                        owner.SendInfoMessage("[ AETHERIAL ] Domain ditutup (tidak ada musuh tersisa).");
+                        continue;
+                    }
+
+                    // Boss confinement DI DALAM domain: kunci posisi ke lingkaran, bukan cuma push velocity.
+                    // Dijalankan tiap pulse supaya boss besar yang dash tidak bisa menembus dinding domain.
+                    float confineR = domainRadius - 40f;
+                    foreach (var npc in Main.npc)
+                    {
+                        if (npc == null || !npc.active || npc.friendly) continue;
+                        float dist = Vector2.Distance(npc.Center, domain.Center);
+                        if (dist <= confineR) continue;
+
+                        Vector2 inward = Elements.ElementVisualHelper.GetAimDirection(npc.Center, domain.Center);
+                        // Tarik keras kembali ke dalam lingkaran.
+                        Vector2 targetPos = domain.Center + inward * (confineR - 8f);
+                        npc.position = targetPos - new Vector2(npc.width / 2f, npc.height / 2f);
+                        if (Vector2.Dot(npc.velocity, inward) < 0) npc.velocity *= 0.2f;
+                        npc.velocity += inward * 4f;
+                        NetMessage.SendData((int)PacketTypes.NpcUpdate, -1, -1, null, npc.whoAmI);
+                        if (npc.boss)
+                        {
+                            Elements.ElementVisualHelper.SpawnVisualProjectile(npc.Center, Vector2.Zero, ProjectileID.DD2BetsyFireball, 20, ownerIdx, scale: 1.6f);
+                        }
                     }
 
                     domain.PulseCount++;
-                    elemMod.OnDomainPulse(owner, domain.Center, domain.Tier, domain.PulseCount);
+                    try
+                    {
+                        elemMod.OnDomainPulse(owner, domain.Center, domain.Tier, domain.PulseCount);
+                    }
+                    catch (Exception ex)
+                    {
+                        TShock.Log.ConsoleWarn($"[Univers.Aetherial] Domain pulse {domain.ElementId} error: {ex.Message}");
+                    }
                 }
             }
         }
@@ -471,8 +547,8 @@ namespace Univers.Aetherial
                 return false;
             }
 
-            double durationSec = 60.0; // 1 menit
-            int cooldownSec = 300;     // 5 menit (300 detik)
+            double durationSec = 60.0; // 1 menit (maks)
+            int cooldownSec = 600;     // 10 menit (600 detik)
             Vector2 castCenter = player.TPlayer.Center;
 
             var domainState = new ActiveDomainState

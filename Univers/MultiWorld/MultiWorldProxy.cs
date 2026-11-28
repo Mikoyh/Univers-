@@ -707,13 +707,11 @@ namespace Univers.MultiWorld
         private static byte MapBackendSlotToClient(ProxySession observerSession, byte backendSlot)
         {
             if (backendSlot == 255) return 255;
-            // Hanya slot DIRI SENDIRI (BackendSlot) yang dipetakan ke ClientSlot.
-            // Slot player LAIN dibiarkan apa adanya. Swap 2-arah lama membuat player lain
-            // yang backendSlot-nya kebetulan == ClientSlot observer tertukar ke slot diri,
-            // sehingga projectile (Zenith dll) hilang / tampil di badan observer.
-            return backendSlot == observerSession.BackendSlot
-                ? observerSession.ClientSlot
-                : backendSlot;
+            // WAJIB permutasi 1-to-1 (swap 2 arah) per-session.
+            // Kalau slot player lain dibiarkan apa adanya, dua client dari IP sama yang
+            // sama-sama memakai ClientSlot 0 akan bertabrakan: karakter player lain tampil
+            // sebagai badan sendiri, dan owner projectile jadi salah.
+            return MapSlot(backendSlot, observerSession.BackendSlot, observerSession.ClientSlot);
         }
 
         private void TrackBackendEntityPacket(ProxySession session, byte[] packet)
@@ -767,7 +765,7 @@ namespace Univers.MultiWorld
                 65 => (packet[3] & 3) != 1 ? 4 : -1, // Teleport: flag bits 0..1 == 1 adalah NPC teleport, bukan player
                 22 or 24 or 29 => 5,
                 91 => (packet.Length >= 10 && packet[7] == 2) ? 8 : -1, // SyncEmoteBubble anchor player
-                27 => 23, // SyncProjectile: owner byte ada di offset 23 (21..22 = type short) pada Terraria 1.4.5
+                27 => 23, // SyncProjectile: owner byte ada di offset 23 (samakan dengan TrackBackendEntityPacket)
                 _ => -1
             };
 
